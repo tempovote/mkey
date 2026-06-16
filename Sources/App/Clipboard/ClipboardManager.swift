@@ -120,7 +120,7 @@ final class ClipboardManager: ObservableObject {
         updateHotKeyRegistration()
         lastChangeCount = pasteboard.changeCount
         timer?.invalidate()
-        let timer = Timer(timeInterval: 0.4, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.poll() }
         }
         RunLoop.main.add(timer, forMode: .common)

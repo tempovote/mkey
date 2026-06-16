@@ -5,6 +5,10 @@ options:
     macOS: "14.0"
   createIntermediateGroups: true
 
+configs:
+  Debug: debug
+  Release: release
+
 settings:
   base:
     SWIFT_VERSION: "5.9"
@@ -16,6 +20,17 @@ settings:
     CODE_SIGN_STYLE: Manual
     DEVELOPMENT_TEAM: ""
     ENABLE_HARDENED_RUNTIME: NO
+  configs:
+    Release:
+      # smaller, lighter release binary
+      SWIFT_OPTIMIZATION_LEVEL: "-O"
+      SWIFT_COMPILATION_MODE: wholemodule
+      GCC_OPTIMIZATION_LEVEL: "s"        # optimize C/C++ engine for size
+      DEAD_CODE_STRIPPING: YES
+      DEPLOYMENT_POSTPROCESSING: YES
+      STRIP_INSTALLED_PRODUCT: YES
+      STRIP_STYLE: all
+      COPY_PHASE_STRIP: YES
 
 targets:
   mkey:

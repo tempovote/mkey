@@ -10,7 +10,29 @@
 //
 
 import AppKit
+import ImageIO
 import SwiftUI
+
+/// Loads small, cached thumbnails for clipboard images so the picker never
+/// decodes full-resolution bitmaps into memory just to draw a 52×38 cell.
+enum ClipThumbnail {
+    private static let cache = NSCache<NSString, NSImage>()
+
+    static func image(for url: URL, maxPixel: CGFloat = 120) -> NSImage? {
+        let key = url.path as NSString
+        if let cached = cache.object(forKey: key) { return cached }
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let opts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
+        let img = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        cache.setObject(img, forKey: key)
+        return img
+    }
+}
 
 /// NSPanel that can become key so it receives key events.
 private final class KeyablePanel: NSPanel {
@@ -292,7 +314,7 @@ private struct PickerRow: View {
                 .foregroundStyle(isSelected ? .white.opacity(0.85) : .secondary)
                 .frame(width: 18, alignment: .trailing)
 
-            if item.isImage, let url = imageURL(item), let nsImage = NSImage(contentsOf: url) {
+            if item.isImage, let url = imageURL(item), let nsImage = ClipThumbnail.image(for: url) {
                 Image(nsImage: nsImage)
                     .resizable()
                     .aspectRatio(contentMode: .fit)

@@ -523,17 +523,6 @@ extern "C" {
         CFRelease(_newEventUp);
     }
 
-    void SendVirtualKey(const Byte& vKey) {
-        CGEventRef eventVkeyDown = CGEventCreateKeyboardEvent (myEventSource, vKey, true);
-        CGEventRef eventVkeyUp = CGEventCreateKeyboardEvent (myEventSource, vKey, false);
-
-        CGEventTapPostEvent(_proxy, eventVkeyDown);
-        CGEventTapPostEvent(_proxy, eventVkeyUp);
-
-        CFRelease(eventVkeyDown);
-        CFRelease(eventVkeyUp);
-    }
-
     void SendBackspace() {
         CGEventTapPostEvent(_proxy, eventBackSpaceDown);
         CGEventTapPostEvent(_proxy, eventBackSpaceUp);
