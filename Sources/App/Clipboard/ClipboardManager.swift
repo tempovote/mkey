@@ -18,26 +18,38 @@ struct ClipItem: Identifiable, Codable, Equatable {
     let id: UUID
     let isImage: Bool
     let text: String        // text content, or a label like "Hình ảnh 1920×1080"
+    let htmlText: String?    // HTML content for rich text items
     let imageFile: String?   // PNG filename (in the clipboard dir) for image items
     let filePath: String?    // original file path of the copied image file
     let date: Date           // when it was captured
     let sourceApp: String?   // app that owned the clipboard at capture time
 
-    init(text: String, source: String?) {
-        id = UUID(); isImage = false; self.text = text; imageFile = nil; filePath = nil; date = Date(); sourceApp = source
+    init(text: String, htmlText: String? = nil, source: String?) {
+        id = UUID(); isImage = false; self.text = text; self.htmlText = htmlText; imageFile = nil; filePath = nil; date = Date(); sourceApp = source
     }
     init(imageFile: String, label: String, filePath: String? = nil, source: String?) {
-        id = UUID(); isImage = true; text = label; self.imageFile = imageFile; self.filePath = filePath; date = Date(); sourceApp = source
+        id = UUID(); isImage = true; text = label; self.imageFile = imageFile; self.filePath = filePath; date = Date(); sourceApp = source; htmlText = nil
+    }
+    init(id: UUID, isImage: Bool, text: String, htmlText: String?, imageFile: String?, filePath: String?, date: Date, sourceApp: String?) {
+        self.id = id
+        self.isImage = isImage
+        self.text = text
+        self.htmlText = htmlText
+        self.imageFile = imageFile
+        self.filePath = filePath
+        self.date = date
+        self.sourceApp = sourceApp
     }
 
     // Custom decode keeps backward compatibility with items saved before
-    // date/sourceApp/filePath existed.
-    enum CodingKeys: String, CodingKey { case id, isImage, text, imageFile, filePath, date, sourceApp }
+    // date/sourceApp/filePath/htmlText existed.
+    enum CodingKeys: String, CodingKey { case id, isImage, text, htmlText, imageFile, filePath, date, sourceApp }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
         isImage = try c.decode(Bool.self, forKey: .isImage)
         text = try c.decode(String.self, forKey: .text)
+        htmlText = try c.decodeIfPresent(String.self, forKey: .htmlText)
         imageFile = try c.decodeIfPresent(String.self, forKey: .imageFile)
         filePath = try c.decodeIfPresent(String.self, forKey: .filePath)
         date = try c.decodeIfPresent(Date.self, forKey: .date) ?? Date()
@@ -253,7 +265,8 @@ final class ClipboardManager: ObservableObject {
         }
 
         if let text = pasteboard.string(forType: .string), !text.isEmpty {
-            addText(text, source: source)
+            let htmlText = pasteboard.string(forType: .html)
+            addText(text, htmlText: htmlText, source: source)
             return
         }
 
@@ -308,9 +321,9 @@ final class ClipboardManager: ObservableObject {
 
     // MARK: Mutations
 
-    private func addText(_ text: String, source: String?) {
+    private func addText(_ text: String, htmlText: String?, source: String?) {
         var next = items.filter { $0.isImage || $0.text != text } // dedupe identical text
-        next.insert(ClipItem(text: text, source: source), at: 0)
+        next.insert(ClipItem(text: text, htmlText: htmlText, source: source), at: 0)
         applyTrimmed(next)
     }
 
@@ -395,6 +408,39 @@ final class ClipboardManager: ObservableObject {
         persistItems()
     }
 
+    func stripFormatting(of item: ClipItem) {
+        guard let idx = items.firstIndex(where: { $0.id == item.id }) else { return }
+        let oldItem = items[idx]
+        
+        var cleanPlainText = oldItem.text
+        if let htmlText = oldItem.htmlText,
+           let data = htmlText.data(using: .utf8),
+           let attrStr = try? NSAttributedString(
+               data: data,
+               options: [.documentType: NSAttributedString.DocumentType.html, .characterEncoding: String.Encoding.utf8.rawValue],
+               documentAttributes: nil
+           ) {
+            // NSAttributedString automatically removes HTML tags and extracts plain text
+            cleanPlainText = attrStr.string
+        }
+        
+        // Strip any remaining or explicit Markdown syntax to return pure plain text
+        cleanPlainText = ClipboardManager.cleanMarkdown(cleanPlainText)
+        
+        let stripped = ClipItem(
+            id: oldItem.id,
+            isImage: oldItem.isImage,
+            text: cleanPlainText,
+            htmlText: nil,
+            imageFile: oldItem.imageFile,
+            filePath: oldItem.filePath,
+            date: oldItem.date,
+            sourceApp: oldItem.sourceApp
+        )
+        items[idx] = stripped
+        persistItems()
+    }
+
     func resetPickerLayout() {
         defaults.removeObject(forKey: "clipboardPickerWidth")
         defaults.removeObject(forKey: "clipboardPickerHeight")
@@ -448,9 +494,20 @@ final class ClipboardManager: ObservableObject {
             } else if !item.isImage {
                 let tempDir = FileManager.default.temporaryDirectory
                 let timestamp = Int(Date().timeIntervalSince1970)
-                let tempFileURL = tempDir.appendingPathComponent("Van_ban_Clipboard_\(timestamp).txt")
-                if (try? item.text.write(to: tempFileURL, atomically: true, encoding: .utf8)) != nil {
-                    activeFilePath = tempFileURL.path
+                
+                if let htmlText = item.htmlText,
+                   let rtfData = ClipboardManager.convertHTMLToRTF(htmlText) {
+                    let tempFileURL = tempDir.appendingPathComponent("Van_ban_Clipboard_\(timestamp).rtf")
+                    if (try? rtfData.write(to: tempFileURL)) != nil {
+                        activeFilePath = tempFileURL.path
+                    }
+                }
+                
+                if activeFilePath == nil {
+                    let tempFileURL = tempDir.appendingPathComponent("Van_ban_Clipboard_\(timestamp).txt")
+                    if (try? item.text.write(to: tempFileURL, atomically: true, encoding: .utf8)) != nil {
+                        activeFilePath = tempFileURL.path
+                    }
                 }
             }
         }
@@ -472,6 +529,9 @@ final class ClipboardManager: ObservableObject {
             }
         } else {
             pbItem.setString(item.text, forType: .string)
+            if let htmlText = item.htmlText {
+                pbItem.setString(htmlText, forType: .html)
+            }
             hasData = true
         }
         
@@ -479,6 +539,9 @@ final class ClipboardManager: ObservableObject {
             pasteboard.writeObjects([pbItem])
         } else {
             pasteboard.setString(item.text, forType: .string)
+            if let htmlText = item.htmlText {
+                pasteboard.setString(htmlText, forType: .html)
+            }
         }
         
         lastChangeCount = pasteboard.changeCount
@@ -494,6 +557,46 @@ final class ClipboardManager: ObservableObject {
             down?.post(tap: .cghidEventTap)
             up?.post(tap: .cghidEventTap)
         }
+    }
+
+    private static func convertHTMLToRTF(_ html: String) -> Data? {
+        guard let data = html.data(using: .utf8) else { return nil }
+        let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+            .documentType: NSAttributedString.DocumentType.html,
+            .characterEncoding: String.Encoding.utf8.rawValue
+        ]
+        guard let attrStr = try? NSAttributedString(data: data, options: options, documentAttributes: nil) else {
+            return nil
+        }
+        return try? attrStr.data(
+            from: NSRange(location: 0, length: attrStr.length),
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+        )
+    }
+
+    private static func cleanMarkdown(_ text: String) -> String {
+        var result = text
+        
+        // 1. Remove bold/italic markup (**text**, *text*, __text__, _text_)
+        result = result.replacingOccurrences(of: "\\*\\*|__", with: "", options: .regularExpression)
+        result = result.replacingOccurrences(of: "\\*|_", with: "", options: .regularExpression)
+        
+        // 2. Remove headers (### Text)
+        result = result.replacingOccurrences(of: "(?m)^#{1,6}\\s+", with: "", options: .regularExpression)
+        
+        // 3. Remove inline code (`code`)
+        result = result.replacingOccurrences(of: "`", with: "")
+        
+        // 4. Remove links [text](url) -> text
+        result = result.replacingOccurrences(of: "\\[([^\\]]+)\\]\\(([^\\)]+)\\)", with: "$1", options: .regularExpression)
+        
+        // 5. Remove images ![alt](url) -> alt or empty
+        result = result.replacingOccurrences(of: "!\\[([^\\]]*)\\]\\(([^\\)]+)\\)", with: "$1", options: .regularExpression)
+
+        // 6. Remove horizontal lines (---, ***, ___)
+        result = result.replacingOccurrences(of: "(?m)^[\\-*_]{3,}\\s*$", with: "", options: .regularExpression)
+        
+        return result
     }
 
     // MARK: Persistence

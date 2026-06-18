@@ -129,6 +129,11 @@ final class ClipboardPicker {
                     self.model.selection = max(0, self.model.filtered.count - 1)
                 }
             },
+            onStrip: { [weak self] item in
+                guard let self else { return }
+                self.manager?.stripFormatting(of: item)
+                self.model.items = self.manager?.items ?? []
+            },
             onClear: { [weak self] in
                 self?.manager?.clear()
                 self?.model.items = []
@@ -311,6 +316,7 @@ private struct ClipboardPickerView: View {
     let imageURL: (ClipItem) -> URL?
     let onPick: (ClipItem) -> Void
     let onRemove: (ClipItem) -> Void
+    let onStrip: (ClipItem) -> Void
     let onClear: () -> Void
     let onPinOnTopToggle: (Bool) -> Void
     let onAutoHideToggle: (Bool) -> Void
@@ -442,7 +448,8 @@ private struct ClipboardPickerView: View {
                                       isSelected: index == model.selection,
                                       imageURL: imageURL,
                                       onPick: { onPick(item) },
-                                      onRemove: { onRemove(item) })
+                                      onRemove: { onRemove(item) },
+                                      onStrip: { onStrip(item) })
                                 .id(item.id) // stable identity so filtering shows correct rows
                         }
                     }
@@ -493,6 +500,7 @@ private struct PickerRow: View {
     let imageURL: (ClipItem) -> URL?
     let onPick: () -> Void
     let onRemove: () -> Void
+    let onStrip: () -> Void
     @State private var hovering = false
 
     private var subtitle: String {
@@ -514,6 +522,48 @@ private struct PickerRow: View {
                     .frame(width: 52, height: 38)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
                     .overlay(RoundedRectangle(cornerRadius: 4).stroke(.quaternary))
+            } else {
+                ZStack {
+                    if item.htmlText != nil {
+                        // Soft, elegant lavender/blue glassmorphic card for rich text
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(
+                                isSelected 
+                                ? LinearGradient(colors: [Color.white.opacity(0.12), Color.white.opacity(0.06)], startPoint: .top, endPoint: .bottom)
+                                : LinearGradient(colors: [Color.blue.opacity(0.06), Color.purple.opacity(0.04)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                            )
+                        
+                        Image(systemName: "doc.richtext")
+                            .font(.system(size: 19, weight: .medium))
+                            .foregroundStyle(
+                                isSelected 
+                                ? LinearGradient(colors: [.white, .white.opacity(0.85)], startPoint: .top, endPoint: .bottom)
+                                : LinearGradient(colors: [.blue, .indigo], startPoint: .topLeading, endPoint: .bottomTrailing)
+                            )
+                    } else {
+                        // Minimalist, neutral gray card for plain text
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(
+                                isSelected
+                                ? Color.white.opacity(0.08)
+                                : Color(nsColor: .quaternaryLabelColor).opacity(0.3)
+                            )
+                        
+                        Image(systemName: "doc.text")
+                            .font(.system(size: 19, weight: .medium))
+                            .foregroundStyle(isSelected ? Color.white.opacity(0.85) : Color.secondary)
+                    }
+                }
+                .frame(width: 52, height: 38)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(
+                            isSelected
+                            ? Color.white.opacity(0.25)
+                            : (item.htmlText != nil ? Color.blue.opacity(0.2) : Color.secondary.opacity(0.15)),
+                            lineWidth: 0.5
+                        )
+                )
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -529,12 +579,24 @@ private struct PickerRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if hovering {
-                Button(action: onRemove) {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(isSelected ? .white.opacity(0.9) : .secondary)
+                HStack(spacing: 8) {
+                    if item.htmlText != nil {
+                        Button(action: onStrip) {
+                            Image(systemName: "eraser")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(isSelected ? Color.white.opacity(0.9) : Color.orange)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Bỏ định dạng Rich Text & Markdown")
+                    }
+
+                    Button(action: onRemove) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(isSelected ? .white.opacity(0.9) : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Xoá mục này khỏi lịch sử")
                 }
-                .buttonStyle(.plain)
-                .help("Xoá mục này")
             }
         }
         .padding(.horizontal, 10)
