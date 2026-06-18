@@ -5,30 +5,64 @@
 //  Created by Tuyen on 1/18/19.
 //  Copyright © 2019 Tuyen Mai. All rights reserved.
 //
-#include <iostream>
 #include <algorithm>
 #include "Engine.h"
 #include <string.h>
-#include <list>
 #include "Macro.h"
 
-static vector<Uint8> _charKeyCode = {
-    KEY_BACKQUOTE, KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8, KEY_9, KEY_0, KEY_MINUS, KEY_EQUALS,
-    KEY_LEFT_BRACKET, KEY_RIGHT_BRACKET, KEY_BACK_SLASH,
-    KEY_SEMICOLON, KEY_QUOTE, KEY_COMMA, KEY_DOT, KEY_SLASH
+struct FixedState {
+    Uint32 data[MAX_BUFF * 2];
+    size_t count;
+
+    FixedState() : count(0) {}
+    
+    void clear() { count = 0; }
+    void push_back(Uint32 val) {
+        if (count < MAX_BUFF * 2) {
+            data[count++] = val;
+        }
+    }
+    void pop_back() {
+        if (count > 0) count--;
+    }
+    Uint32 back() const {
+        if (count > 0) return data[count - 1];
+        return 0;
+    }
+    size_t size() const { return count; }
+    Uint32 operator[](size_t idx) const { return data[idx]; }
+    Uint32& operator[](size_t idx) { return data[idx]; }
 };
 
-static vector<Uint8> _breakCode = {
-    KEY_ESC, KEY_TAB, KEY_ENTER, KEY_RETURN, KEY_LEFT, KEY_RIGHT, KEY_DOWN, KEY_UP, KEY_COMMA, KEY_DOT,
-    KEY_SLASH, KEY_SEMICOLON, KEY_QUOTE, KEY_BACK_SLASH, KEY_MINUS, KEY_EQUALS, KEY_BACKQUOTE, KEY_TAB
-#if _WIN32
-	, VK_INSERT, VK_HOME, VK_END, VK_DELETE, VK_PRIOR, VK_NEXT, VK_SNAPSHOT, VK_PRINT, VK_SELECT, VK_HELP,
-	VK_EXECUTE, VK_NUMLOCK, VK_SCROLL
-#endif
-};
+class TypingStatesList {
+private:
+    FixedState elements[MAX_BUFF * 4];
+    size_t totalSize;
 
-static vector<Uint8> _macroBreakCode = {
-    KEY_RETURN, KEY_COMMA, KEY_DOT, KEY_SLASH, KEY_SEMICOLON, KEY_QUOTE, KEY_BACK_SLASH, KEY_MINUS, KEY_EQUALS
+public:
+    TypingStatesList() : totalSize(0) {}
+
+    void clear() { totalSize = 0; }
+    size_t size() const { return totalSize; }
+    
+    void push_back(const FixedState& state) {
+        if (totalSize < MAX_BUFF * 4) {
+            elements[totalSize++] = state;
+        }
+    }
+    
+    FixedState back() const {
+        if (totalSize > 0) {
+            return elements[totalSize - 1];
+        }
+        return FixedState();
+    }
+    
+    void pop_back() {
+        if (totalSize > 0) {
+            totalSize--;
+        }
+    }
 };
 
 static Uint16 ProcessingChar[][11] = {
@@ -82,9 +116,9 @@ vKeyHookState HookState;
  */
 static Uint32 TypingWord[MAX_BUFF];
 static Byte _index = 0;
-static vector<Uint32> _longWordHelper; //save the word when _index >= MAX_BUFF
-static list<vector<Uint32>> _typingStates; //Aug 28th, 2019: typing helper, save long state of Typing word, can go back and modify the word
-vector<Uint32> _typingStatesData;
+static FixedState _longWordHelper; //save the word when _index >= MAX_BUFF
+static TypingStatesList _typingStates; //Aug 28th, 2019: typing helper, save long state of Typing word, can go back and modify the word
+static FixedState _typingStatesData;
 
 /**
  * Use for restore key if invalid word
@@ -114,7 +148,7 @@ static int _spaceCount = 0; //add: July 30th, 2019
 static bool _hasHandledMacro = false; //for macro flag August 9th, 2019
 static Byte _upperCaseStatus = 0; //for Write upper case for the first letter; 2: will upper case
 static bool _isCharKeyCode;
-static vector<Uint32> _specialChar;
+static FixedState _specialChar;
 static bool _useSpellCheckingBefore;
 static bool _hasHandleQuickConsonant;
 static bool _willTempOffEngine = false;
@@ -123,13 +157,60 @@ static bool _willTempOffEngine = false;
 void findAndCalculateVowel(const bool& forGrammar=false);
 void insertMark(const Uint32& markMask, const bool& canModifyFlag=true);
 
-static std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
 wstring utf8ToWideString(const string& str) {
-    return converter.from_bytes(str.c_str());
+    wstring result;
+    result.reserve(str.size());
+    for (size_t i = 0; i < str.size();) {
+        unsigned char c = str[i];
+        wchar_t uni = 0;
+        size_t bytes = 0;
+        if (c < 0x80) {
+            uni = c;
+            bytes = 1;
+        } else if ((c & 0xE0) == 0xC0) {
+            uni = c & 0x1F;
+            bytes = 2;
+        } else if ((c & 0xF0) == 0xE0) {
+            uni = c & 0x0F;
+            bytes = 3;
+        } else if ((c & 0xF8) == 0xF0) {
+            uni = c & 0x07;
+            bytes = 4;
+        } else {
+            i++;
+            continue;
+        }
+        if (i + bytes > str.size()) break;
+        for (size_t j = 1; j < bytes; j++) {
+            uni = (uni << 6) | (str[i + j] & 0x3F);
+        }
+        result.push_back(uni);
+        i += bytes;
+    }
+    return result;
 }
 
 string wideStringToUtf8(const wstring& str) {
-    return converter.to_bytes(str.c_str());
+    string result;
+    result.reserve(str.size() * 3);
+    for (wchar_t uni : str) {
+        if (uni < 0x80) {
+            result.push_back(static_cast<char>(uni));
+        } else if (uni < 0x800) {
+            result.push_back(static_cast<char>(0xC0 | (uni >> 6)));
+            result.push_back(static_cast<char>(0x80 | (uni & 0x3F)));
+        } else if (uni < 0x10000) {
+            result.push_back(static_cast<char>(0xE0 | (uni >> 12)));
+            result.push_back(static_cast<char>(0x80 | ((uni >> 6) & 0x3F)));
+            result.push_back(static_cast<char>(0x80 | (uni & 0x3F)));
+        } else if (uni < 0x110000) {
+            result.push_back(static_cast<char>(0xF0 | (uni >> 18)));
+            result.push_back(static_cast<char>(0x80 | ((uni >> 12) & 0x3F)));
+            result.push_back(static_cast<char>(0x80 | ((uni >> 6) & 0x3F)));
+            result.push_back(static_cast<char>(0x80 | (uni & 0x3F)));
+        }
+    }
+    return result;
 }
 
 void* vKeyInit() {
@@ -145,21 +226,90 @@ void* vKeyInit() {
 bool isWordBreak(const vKeyEvent& event, const vKeyEventState& state, const Uint16& data) {
     if (event == vKeyEvent::Mouse)
         return true;
-    for (i = 0; i < _breakCode.size(); i++) {
-        if (_breakCode[i] == data) {
+    switch (data) {
+        case KEY_ESC:
+        case KEY_TAB:
+        case KEY_ENTER:
+        case KEY_RETURN:
+        case KEY_LEFT:
+        case KEY_RIGHT:
+        case KEY_DOWN:
+        case KEY_UP:
+        case KEY_COMMA:
+        case KEY_DOT:
+        case KEY_SLASH:
+        case KEY_SEMICOLON:
+        case KEY_QUOTE:
+        case KEY_BACK_SLASH:
+        case KEY_MINUS:
+        case KEY_EQUALS:
+        case KEY_BACKQUOTE:
             return true;
-        }
+#if _WIN32
+        case VK_INSERT:
+        case VK_HOME:
+        case VK_END:
+        case VK_DELETE:
+        case VK_PRIOR:
+        case VK_NEXT:
+        case VK_SNAPSHOT:
+        case VK_PRINT:
+        case VK_SELECT:
+        case VK_HELP:
+        case VK_EXECUTE:
+        case VK_NUMLOCK:
+        case VK_SCROLL:
+            return true;
+#endif
+        default:
+            return false;
     }
-    return false;
 }
 
 bool isMacroBreakCode(const int& data) {
-    for (i = 0; i < _macroBreakCode.size(); i++) {
-        if (_macroBreakCode[i] == data) {
+    switch (data) {
+        case KEY_RETURN:
+        case KEY_COMMA:
+        case KEY_DOT:
+        case KEY_SLASH:
+        case KEY_SEMICOLON:
+        case KEY_QUOTE:
+        case KEY_BACK_SLASH:
+        case KEY_MINUS:
+        case KEY_EQUALS:
             return true;
-        }
+        default:
+            return false;
     }
-    return false;
+}
+
+static inline bool isCharKeyCode(const Uint16& data) {
+    switch (data) {
+        case KEY_BACKQUOTE:
+        case KEY_1:
+        case KEY_2:
+        case KEY_3:
+        case KEY_4:
+        case KEY_5:
+        case KEY_6:
+        case KEY_7:
+        case KEY_8:
+        case KEY_9:
+        case KEY_0:
+        case KEY_MINUS:
+        case KEY_EQUALS:
+        case KEY_LEFT_BRACKET:
+        case KEY_RIGHT_BRACKET:
+        case KEY_BACK_SLASH:
+        case KEY_SEMICOLON:
+        case KEY_QUOTE:
+        case KEY_COMMA:
+        case KEY_DOT:
+        case KEY_SLASH:
+            return true;
+        default:
+            return false;
+    }
 }
 
 void setKeyData(const Byte& index, const Uint16& keyCode, const bool& isCaps) {
@@ -230,7 +380,7 @@ void checkSpelling(const bool& forceCheckVowel=false) {
             _spellingVowelOK = false;
             //check correct combined vowel
             if (k - j > 1 && forceCheckVowel) {
-                vector<vector<Uint32>>& vowelSet = _vowelCombine[CHR(j)];
+                const Array2D32& vowelSet = _vowelCombine[CHR(j)];
                 for (l = 0; l < vowelSet.size(); l++) {
                     _spellingFlag = false;
                     for (ii = 1; ii < vowelSet[l].size(); ii++) {
@@ -440,7 +590,7 @@ void restoreLastTypingState() {
             if (_typingStatesData[0] == KEY_SPACE) {
                 _spaceCount = (int)_typingStatesData.size();
                 _index = 0;
-            } else if (std::find(_charKeyCode.begin(), _charKeyCode.end(), (Uint16)_typingStatesData[0]) != _charKeyCode.end()) {
+            } else if (isCharKeyCode((Uint16)_typingStatesData[0])) {
                 _index = 0;
                 _specialChar = _typingStatesData;
                 checkSpelling();
@@ -465,7 +615,7 @@ void startNewSession() {
     _longWordHelper.clear();
 }
 
-void checkCorrectVowel(vector<vector<Uint16>>& charset, int& i, int& k, const Uint16& markKey) {
+void checkCorrectVowel(const Array2D16& charset, int& i, int& k, const Uint16& markKey) {
     //ignore "qu" case
     if (_index >= 2 && CHR(_index-1) == KEY_U && CHR(_index-2) == KEY_Q) {
         isCorect = false;
@@ -610,7 +760,7 @@ void removeMark() {
 }
 
 bool canHasEndConsonant() {
-    vector<vector<Uint32>>& vo = _vowelCombine[CHR(VSI)];
+    const Array2D32& vo = _vowelCombine[CHR(VSI)];
     for (ii = 0; ii < vo.size(); ii++) {
         kk = VSI;
         for (iii = 1; iii < vo[ii].size(); iii++) {
@@ -1102,8 +1252,8 @@ void handleMainKey(const Uint16& data, const bool& isCaps) {
     
     //if is mark key
     if (IS_MARK_KEY(data)) {
-        for (i = 0; i < _vowelForMark.size(); i++) {
-            vector<vector<Uint16>>& charset = _vowelForMark[i];
+        for (i = 0; i < 6; i++) {
+            const Array2D16& charset = _vowelForMarkStatic[i].vowelSet;
             isCorect = false;
             isChanged = false;
             k = _index;
@@ -1152,7 +1302,7 @@ void handleMainKey(const Uint16& data, const bool& isCaps) {
     }
     
     keyForAEO = ((vInputType != vVNI) ? data : ((data == KEY_7 || data == KEY_8 ? KEY_W : (data == KEY_6 ? TypingWord[VEI] : data))));
-    vector<vector<Uint16>>& charset = _vowel[keyForAEO];
+    const Array2D16& charset = _vowel[keyForAEO];
     isCorect = false;
     isChanged = false;
     k = _index;
@@ -1300,8 +1450,7 @@ void vEnglishMode(const vKeyEventState& state, const Uint16& data, const bool& i
             _willTempOffEngine = false;
         }
     } else {
-        if (isWordBreak(vKeyEvent::Keyboard, state, data) &&
-            std::find(_charKeyCode.begin(), _charKeyCode.end(), data) == _charKeyCode.end()) {
+        if (isWordBreak(vKeyEvent::Keyboard, state, data) && !isCharKeyCode(data)) {
             hMacroKey.clear();
             _willTempOffEngine = false;
         } else {
@@ -1341,7 +1490,7 @@ void vKeyHandleEvent(const vKeyEvent& event,
             }
         }
         
-        _isCharKeyCode = state == KeyDown && std::find(_charKeyCode.begin(), _charKeyCode.end(), data) != _charKeyCode.end();
+        _isCharKeyCode = state == KeyDown && isCharKeyCode(data);
         if (!_isCharKeyCode) { //clear all line cache
             _specialChar.clear();
             _typingStates.clear();

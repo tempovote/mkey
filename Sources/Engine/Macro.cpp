@@ -9,7 +9,6 @@
 #include "Macro.h"
 #include "Vietnamese.h"
 #include "Engine.h"
-#include <iostream>
 #include <memory.h>
 #include <fstream>
 
@@ -42,7 +41,7 @@ static void convert(const string& str, vector<Uint32>& outData) {
         }
         
         //find character which has tone/mark
-        for (map<Uint32, vector<Uint16>>::iterator it = _codeTable[0].begin(); it != _codeTable[0].end(); ++it) {
+        for (auto it = _codeTable[0].begin(); it != _codeTable[0].end(); ++it) {
             kSign = -1;
             k = 0;
             for (int j = 0; j < it->second.size(); j++) {
@@ -110,6 +109,7 @@ void initMacroMap(const Byte* pData, const int& size) {
 }
 
 void getMacroSaveData(vector<Byte>& outData) {
+    outData.clear();
     Uint16 totalMacro = (Uint16)macroMap.size();
     outData.push_back((Byte)totalMacro);
     outData.push_back((Byte)(totalMacro>>8));
@@ -137,7 +137,7 @@ static bool modifyCaseUnicode(Uint32& code, const bool& isUpperCase=true) {
     }
     
     //for unicode character
-    for (map<Uint32, vector<Uint16>>::iterator it = _codeTable[vCodeTable].begin(); it != _codeTable[vCodeTable].end(); ++it) {
+    for (auto it = _codeTable[vCodeTable].begin(); it != _codeTable[vCodeTable].end(); ++it) {
         for (_kMacro = 0; _kMacro < it->second.size(); _kMacro++) {
             if ((Uint16)code == it->second[_kMacro]) {
                 if (_kMacro % 2 == 0 && !isUpperCase)
@@ -156,10 +156,10 @@ bool findMacro(vector<Uint32>& key, vector<Uint32>& macroContentCode) {
     for (c = 0; c < key.size(); c++) {
         key[c] = getCharacterCode(key[c]);
     }
-    if (macroMap.find(key) != macroMap.end()) {
+    map<vector<Uint32>, MacroData>::iterator macroIt = macroMap.find(key);
+    if (macroIt != macroMap.end()) {
         macroContentCode.clear();
-        MacroData data = macroMap[key];
-        macroContentCode = data.macroContentCode;
+        macroContentCode = macroIt->second.macroContentCode;
         return true;
     }
     if (vAutoCapsMacro) {
@@ -172,10 +172,10 @@ bool findMacro(vector<Uint32>& key, vector<Uint32>& macroContentCode) {
         }
         
         if (key.size() > 0 && modifyCaseUnicode(key[0], false)) {
-            if (macroMap.find(key) != macroMap.end()) {
+            macroIt = macroMap.find(key);
+            if (macroIt != macroMap.end()) {
                 macroContentCode.clear();
-                MacroData data = macroMap[key];
-                macroContentCode = data.macroContentCode;
+                macroContentCode = macroIt->second.macroContentCode;
                 for (c = 0; c < macroContentCode.size(); c++) {
                     if (c == 0 || _macroFlag) {
                         _kChar = keyCodeToCharacter(macroContentCode[c]);

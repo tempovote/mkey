@@ -76,7 +76,29 @@ final class ClipboardManager: ObservableObject {
         }
     }
 
-    @Published private(set) var items: [ClipItem] = []
+    @Published var pinOnTop: Bool {
+        didSet {
+            guard oldValue != pinOnTop else { return }
+            defaults.set(pinOnTop, forKey: "clipboardPickerPinOnTop")
+            picker.updatePinOnTop(pinOnTop)
+        }
+    }
+
+    @Published var autoHide: Bool {
+        didSet {
+            guard oldValue != autoHide else { return }
+            defaults.set(autoHide, forKey: "clipboardPickerAutoHide")
+            picker.updateAutoHide(autoHide)
+        }
+    }
+
+    @Published var hasCustomLayout: Bool = false
+
+    @Published private(set) var items: [ClipItem] = [] {
+        didSet {
+            picker.updateItems(items)
+        }
+    }
 
     private let pasteboard = NSPasteboard.general
     private var lastChangeCount: Int
@@ -90,6 +112,8 @@ final class ClipboardManager: ObservableObject {
         defaults.register(defaults: [
             "clipboardHistoryEnabled": true,
             "clipboardMaxItems": 30,
+            "clipboardPickerPinOnTop": true,
+            "clipboardPickerAutoHide": true,
         ])
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         imageDir = appSupport.appendingPathComponent("MKey/clipboard", isDirectory: true)
@@ -97,6 +121,8 @@ final class ClipboardManager: ObservableObject {
 
         enabled = defaults.bool(forKey: "clipboardHistoryEnabled")
         maxItems = max(10, min(100, defaults.integer(forKey: "clipboardMaxItems")))
+        pinOnTop = defaults.bool(forKey: "clipboardPickerPinOnTop")
+        autoHide = defaults.bool(forKey: "clipboardPickerAutoHide")
         let savedHotKey = Int32(truncatingIfNeeded: defaults.integer(forKey: "clipboardHotKey"))
         hotKey = savedHotKey == 0 ? ClipboardManager.defaultHotKey : savedHotKey
         lastChangeCount = pasteboard.changeCount
@@ -105,6 +131,7 @@ final class ClipboardManager: ObservableObject {
         hotKeyMonitor.onPressed = { [weak self] in
             Task { @MainActor in self?.togglePicker() }
         }
+        updateCustomLayoutStatus()
     }
 
     func imageURL(for item: ClipItem) -> URL? {
@@ -168,10 +195,15 @@ final class ClipboardManager: ObservableObject {
     }
 
     private func currentImagePNG() -> Data? {
-        if let png = pasteboard.data(forType: .png) { return png }
+        if let png = pasteboard.data(forType: .png) {
+            return png.count <= ClipboardManager.maxImageBytes ? png : nil
+        }
         if let tiff = pasteboard.data(forType: .tiff),
+           tiff.count <= ClipboardManager.maxImageBytes,
            let rep = NSBitmapImageRep(data: tiff) {
-            return rep.representation(using: .png, properties: [:])
+            guard let png = rep.representation(using: .png, properties: [:]),
+                  png.count <= ClipboardManager.maxImageBytes else { return nil }
+            return png
         }
         return nil
     }
@@ -185,7 +217,6 @@ final class ClipboardManager: ObservableObject {
     }
 
     private func addImage(_ png: Data, source: String?) {
-        guard png.count <= ClipboardManager.maxImageBytes else { return }
         let filename = "\(UUID().uuidString).png"
         let url = imageDir.appendingPathComponent(filename)
         do { try png.write(to: url) } catch { return }
@@ -237,6 +268,23 @@ final class ClipboardManager: ObservableObject {
         deleteImageFiles(of: [item])
         items.removeAll { $0.id == item.id }
         persistItems()
+    }
+
+    func resetPickerLayout() {
+        defaults.removeObject(forKey: "clipboardPickerWidth")
+        defaults.removeObject(forKey: "clipboardPickerHeight")
+        defaults.removeObject(forKey: "clipboardPickerX")
+        defaults.removeObject(forKey: "clipboardPickerY")
+        updateCustomLayoutStatus()
+        picker.resetLayout()
+    }
+
+    func updateCustomLayoutStatus() {
+        let hasWidth = defaults.object(forKey: "clipboardPickerWidth") != nil
+        let hasHeight = defaults.object(forKey: "clipboardPickerHeight") != nil
+        let hasX = defaults.object(forKey: "clipboardPickerX") != nil
+        let hasY = defaults.object(forKey: "clipboardPickerY") != nil
+        hasCustomLayout = hasWidth || hasHeight || hasX || hasY
     }
 
     private func deleteImageFiles<S: Sequence>(of seq: S) where S.Element == ClipItem {

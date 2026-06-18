@@ -126,7 +126,9 @@ final class MkeyAppDelegate: NSObject, NSApplicationDelegate {
         // banner "Mở Cài đặt hệ thống" button asks us to (re-)register for AX
         NotificationCenter.default.addObserver(forName: .mkRequestAccessibility,
                                                object: nil, queue: .main) { [weak self] _ in
-            self?.askForAccessibility()
+            Task { @MainActor in
+                self?.askForAccessibility()
+            }
         }
 
         if AXIsProcessTrusted() {

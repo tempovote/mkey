@@ -9,16 +9,11 @@
 #ifndef Engine_h
 #define Engine_h
 
-#include <locale>
-#include <codecvt>
-
 #include "DataType.h"
 #include "Vietnamese.h"
 #include "Macro.h"
 #include "SmartSwitchKey.h"
 #include "ConvertTool.h"
-
-#define IS_DEBUG 1
 
 #ifndef LOBYTE
 #define LOBYTE(data) (data & 0xFF)

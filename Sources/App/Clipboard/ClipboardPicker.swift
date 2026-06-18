@@ -63,6 +63,8 @@ final class ClipboardPickerModel: ObservableObject {
     @Published var items: [ClipItem] = []   // full history
     @Published var query: String = ""
     @Published var selection: Int = 0
+    @Published var pinOnTop: Bool = true
+    @Published var autoHide: Bool = true
 
     /// Items after applying the search query (selection indexes into this).
     /// Case- and diacritic-insensitive so "khong" finds "không".
@@ -80,6 +82,9 @@ final class ClipboardPicker {
     private var panel: KeyablePanel?
     private var previousApp: NSRunningApplication?
     private var keyMonitor: Any?
+    private var resizeObserver: Any?
+    private var resignObserver: Any?
+    private var moveObserver: Any?
     private var pasting = false
     private let model = ClipboardPickerModel()
     private weak var manager: ClipboardManager?
@@ -90,6 +95,33 @@ final class ClipboardPicker {
         isOpen ? close() : show(manager: manager)
     }
 
+    func updatePinOnTop(_ pin: Bool) {
+        model.pinOnTop = pin
+        panel?.level = pin ? .floating : .normal
+    }
+
+    func updateAutoHide(_ hide: Bool) {
+        model.autoHide = hide
+    }
+
+    func updateItems(_ newItems: [ClipItem]) {
+        model.items = newItems
+        if model.selection >= model.filtered.count {
+            model.selection = max(0, model.filtered.count - 1)
+        }
+    }
+
+    func resetLayout() {
+        guard let panel else { return }
+        let defaultWidth: CGFloat = 480.0
+        let defaultHeight: CGFloat = 640.0
+        if let frame = (panel.screen ?? NSScreen.main)?.visibleFrame {
+            let x = frame.midX - defaultWidth / 2
+            let y = frame.midY - defaultHeight / 2
+            panel.setFrame(NSRect(x: x, y: y, width: defaultWidth, height: defaultHeight), display: true, animate: true)
+        }
+    }
+
     func show(manager: ClipboardManager) {
         self.manager = manager
         previousApp = NSWorkspace.shared.frontmostApplication
@@ -97,6 +129,8 @@ final class ClipboardPicker {
         model.items = manager.items
         model.query = ""
         model.selection = 0
+        model.pinOnTop = manager.pinOnTop
+        model.autoHide = manager.autoHide
 
         let root = ClipboardPickerView(
             model: model,
@@ -114,6 +148,14 @@ final class ClipboardPicker {
                 self?.manager?.clear()
                 self?.model.items = []
             },
+            onPinOnTopToggle: { [weak self] pin in
+                guard let self else { return }
+                self.manager?.pinOnTop = pin
+            },
+            onAutoHideToggle: { [weak self] autoHide in
+                guard let self else { return }
+                self.manager?.autoHide = autoHide
+            },
             onClose: { [weak self] in self?.close() })
         let hosting = NSHostingController(rootView: root)
 
@@ -122,21 +164,45 @@ final class ClipboardPicker {
         // WITHOUT activating the app — on macOS 26 NSApp.activate() no longer
         // brings an accessory app forward, so a plain borderless window never
         // became key and typing leaked to the previously-focused app.
+        let width = UserDefaults.standard.double(forKey: "clipboardPickerWidth")
+        let actualWidth = (width == 0.0 || width == 460.0 || width == 600.0) ? 480.0 : (width >= 380.0 ? CGFloat(width) : 480.0)
+        let height = UserDefaults.standard.double(forKey: "clipboardPickerHeight")
+        let actualHeight = (height == 0.0 || height == 420.0 || height == 500.0 || height == 1000.0) ? 640.0 : (height >= 300.0 ? CGFloat(height) : 640.0)
+
+        let x = UserDefaults.standard.double(forKey: "clipboardPickerX")
+        let y = UserDefaults.standard.double(forKey: "clipboardPickerY")
+
         let panel = KeyablePanel(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 420),
-            styleMask: [.borderless, .nonactivatingPanel],
+            contentRect: NSRect(x: 0, y: 0, width: actualWidth, height: actualHeight),
+            styleMask: [.borderless, .resizable, .nonactivatingPanel],
             backing: .buffered, defer: false)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.isMovableByWindowBackground = true
-        panel.level = .floating
+        panel.level = manager.pinOnTop ? .floating : .normal
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
+        panel.minSize = NSSize(width: 380, height: 300)
         panel.contentViewController = hosting
-        if let frame = (panel.screen ?? NSScreen.main)?.visibleFrame {
-            panel.setFrameOrigin(NSPoint(x: frame.midX - 230, y: frame.midY - 40))
+
+        var origin = NSPoint.zero
+        if x != 0.0 || y != 0.0 {
+            let proposedRect = NSRect(x: CGFloat(x), y: CGFloat(y), width: actualWidth, height: actualHeight)
+            let isVisible = NSScreen.screens.contains { screen in
+                screen.frame.intersects(proposedRect)
+            }
+            if isVisible {
+                origin = proposedRect.origin
+            }
         }
+
+        if origin == .zero {
+            if let frame = (panel.screen ?? NSScreen.main)?.visibleFrame {
+                origin = NSPoint(x: frame.midX - actualWidth / 2, y: frame.midY - actualHeight / 2)
+            }
+        }
+        panel.setFrame(NSRect(origin: origin, size: NSSize(width: actualWidth, height: actualHeight)), display: true)
 
         self.panel = panel
         MKBridge.setEngineSuspended(true) // raw keys into the search field
@@ -144,12 +210,63 @@ final class ClipboardPicker {
         panel.makeFirstResponder(panel.contentView)
 
         installKeyMonitor()
+
+        resizeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResizeNotification,
+            object: panel,
+            queue: .main
+        ) { [weak panel, weak self] _ in
+            MainActor.assumeIsolated {
+                guard let panel else { return }
+                let size = panel.frame.size
+                UserDefaults.standard.set(Double(size.width), forKey: "clipboardPickerWidth")
+                UserDefaults.standard.set(Double(size.height), forKey: "clipboardPickerHeight")
+                self?.manager?.updateCustomLayoutStatus()
+            }
+        }
+
+        moveObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didMoveNotification,
+            object: panel,
+            queue: .main
+        ) { [weak panel, weak self] _ in
+            MainActor.assumeIsolated {
+                guard let panel else { return }
+                let origin = panel.frame.origin
+                UserDefaults.standard.set(Double(origin.x), forKey: "clipboardPickerX")
+                UserDefaults.standard.set(Double(origin.y), forKey: "clipboardPickerY")
+                self?.manager?.updateCustomLayoutStatus()
+            }
+        }
+
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: panel,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if self.model.autoHide {
+                    self.close()
+                }
+            }
+        }
     }
 
     func close() {
         MKBridge.setEngineSuspended(false)
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
+        if let resizeObserver { NotificationCenter.default.removeObserver(resizeObserver); self.resizeObserver = nil }
+        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver); self.resignObserver = nil }
+        if let moveObserver { NotificationCenter.default.removeObserver(moveObserver); self.moveObserver = nil }
         let wasOpen = panel != nil
+        if let frame = panel?.frame {
+            UserDefaults.standard.set(Double(frame.size.width), forKey: "clipboardPickerWidth")
+            UserDefaults.standard.set(Double(frame.size.height), forKey: "clipboardPickerHeight")
+            UserDefaults.standard.set(Double(frame.origin.x), forKey: "clipboardPickerX")
+            UserDefaults.standard.set(Double(frame.origin.y), forKey: "clipboardPickerY")
+            manager?.updateCustomLayoutStatus()
+        }
         panel?.orderOut(nil)
         panel = nil
         // we activated MKey to show the panel; hand focus back so the user
@@ -212,21 +329,52 @@ private struct ClipboardPickerView: View {
     let onPick: (ClipItem) -> Void
     let onRemove: (ClipItem) -> Void
     let onClear: () -> Void
+    let onPinOnTopToggle: (Bool) -> Void
+    let onAutoHideToggle: (Bool) -> Void
     let onClose: () -> Void
     @FocusState private var searchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
+            HStack(spacing: 12) {
                 Image(systemName: "doc.on.clipboard")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.accentColor)
+                    .font(.headline)
                 Text("Lịch sử Clipboard")
                     .font(.headline)
                 Spacer()
+
                 if !model.items.isEmpty {
                     Text("\(model.items.count) mục")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+
+                // Pin Button
+                Button {
+                    model.pinOnTop.toggle()
+                    onPinOnTopToggle(model.pinOnTop)
+                } label: {
+                    Image(systemName: model.pinOnTop ? "pin.fill" : "pin")
+                        .foregroundStyle(model.pinOnTop ? Color.accentColor : .secondary)
+                        .font(.system(size: 13, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .help(model.pinOnTop ? "Bỏ ghim trên cùng" : "Ghim trên cùng")
+
+                // Auto-Hide Button
+                Button {
+                    model.autoHide.toggle()
+                    onAutoHideToggle(model.autoHide)
+                } label: {
+                    Image(systemName: model.autoHide ? "eye.slash.fill" : "eye")
+                        .foregroundStyle(model.autoHide ? Color.accentColor : .secondary)
+                        .font(.system(size: 13, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .help(model.autoHide ? "Tắt tự động ẩn" : "Bật tự động ẩn")
+
+                if !model.items.isEmpty {
                     Button(role: .destructive) {
                         onClear()
                     } label: {
@@ -236,6 +384,7 @@ private struct ClipboardPickerView: View {
                     .buttonStyle(.borderless)
                     .help("Xoá toàn bộ lịch sử")
                 }
+
                 Button {
                     onClose()
                 } label: {
@@ -243,7 +392,7 @@ private struct ClipboardPickerView: View {
                         .foregroundStyle(.secondary)
                         .font(.title3)
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
                 .help("Đóng (Esc)")
             }
             .padding(.horizontal, 16)
@@ -260,8 +409,11 @@ private struct ClipboardPickerView: View {
                         .focused($searchFocused)
                         .onChange(of: model.query) { _, _ in model.selection = 0 }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 9)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color(nsColor: .controlBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
                 Divider()
             }
 
@@ -277,7 +429,7 @@ private struct ClipboardPickerView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 7)
         }
-        .frame(width: 460, height: 420)
+        .frame(minWidth: 380, maxWidth: .infinity, minHeight: 300, maxHeight: .infinity)
         // Light behind-window blur softens the content underneath (so it isn't
         // a busy, sharp see-through) while a low tint keeps text readable.
         .background(Color(nsColor: .windowBackgroundColor).opacity(0.45))
@@ -409,6 +561,8 @@ private struct PickerRow: View {
         .contentShape(Rectangle())
         .onTapGesture { onPick() }
         .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: isSelected)
+        .animation(.easeOut(duration: 0.12), value: hovering)
     }
 
     /// Vietnamese relative time: "Vừa xong", "5 phút trước", "2 giờ trước", …

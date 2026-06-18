@@ -12,7 +12,6 @@
 #include "Engine.h"
 #import "MKBridge.h"
 
-#define FRONT_APP [[NSWorkspace sharedWorkspace] frontmostApplication].bundleIdentifier
 #define OTHER_CONTROL_KEY (_flag & kCGEventFlagMaskCommand) || (_flag & kCGEventFlagMaskControl) || \
                             (_flag & kCGEventFlagMaskAlternate) || (_flag & kCGEventFlagMaskSecondaryFn) || \
                             (_flag & kCGEventFlagMaskNumericPad) || (_flag & kCGEventFlagMaskHelp)
@@ -21,23 +20,6 @@
 #define MAX_UNICODE_STRING  20
 #define EMPTY_HOTKEY 0xFE0000FE
 #define LOAD_DATA(VAR, KEY) VAR = (int)[[NSUserDefaults standardUserDefaults] integerForKey:@#KEY]
-
-// Ignore code for Modifier keys and numpad
-NSDictionary *keyStringToKeyCodeMap = @{
-    // Characters from number row
-    @"`": @50, @"~": @50, @"1": @18, @"!": @18, @"2": @19, @"@": @19, @"3": @20, @"#": @20, @"4": @21, @"$": @21,
-    @"5": @23, @"%": @23, @"6": @22, @"^": @22, @"7": @26, @"&": @26, @"8": @28, @"*": @28, @"9": @25, @"(": @25,
-    @"0": @29, @")": @29, @"-": @27, @"_": @27, @"=": @24, @"+": @24,
-    // Characters from first keyboard row
-    @"q": @12, @"w": @13, @"e": @14, @"r": @15, @"t": @17, @"y": @16, @"u": @32, @"i": @34, @"o": @31, @"p": @35,
-    @"[": @33, @"{": @33, @"]": @30, @"}": @30, @"\\": @42, @"|": @42,
-    // Characters from second keyboard row
-    @"a": @0, @"s": @1, @"d": @2, @"f": @3, @"g": @5, @"h": @4, @"j": @38, @"k": @40, @"l": @37,
-    @";": @41, @":": @41, @"'": @39, @"\"": @39,
-    // Characters from third keyboard row
-    @"z": @6, @"x": @7, @"c": @8, @"v": @9, @"b": @11, @"n": @45, @"m": @46,
-    @",": @43, @"<": @43, @".": @47, @">": @47, @"/": @44, @"?": @44
-};
 
 extern "C" void MKReEnableEventTap(void); //implemented in MKBridge.mm
 
@@ -71,21 +53,69 @@ extern "C" {
 
     AXUIElementRef _axSystemWide = NULL;
     AXUIElementRef _axCachedFocused = NULL;
+    NSArray* _axIncludedApps = @[];
     bool _axCachedIsSlow = false;
+    bool _axCachedIsIncluded = false;
     CFAbsoluteTime _axCacheTime = 0;
     pid_t _axLoggedPid = 0;
+    CFAbsoluteTime _lastKeystrokeTime = 0;
+    bool _cachedIsEnglishLayout = true;
+    bool _inputSourceObserverInstalled = false;
+    pid_t _frontMostPid = 0;
+    NSString* _frontMostApp = @"UnknownApp";
+    bool _frontMostIsNiceSpace = false;
+    bool _frontMostIsUnicodeCompound = false;
+    bool _frontMostNeedsChromiumFix = false;
+
+    void MKUpdateInputSourceCache() {
+        TISInputSourceRef isource = TISCopyCurrentKeyboardInputSource();
+        if (isource != NULL) {
+            CFArrayRef languages = (CFArrayRef)TISGetInputSourceProperty(isource, kTISPropertyInputSourceLanguages);
+            if (languages != NULL && CFArrayGetCount(languages) > 0) {
+                CFStringRef langRef = (CFStringRef)CFArrayGetValueAtIndex(languages, 0);
+                if (langRef != NULL) {
+                    NSString *currentLanguage = (__bridge NSString *)langRef;
+                    _cachedIsEnglishLayout = [currentLanguage isLike:@"en"];
+                }
+            }
+            CFRelease(isource);
+        }
+    }
+
+    void MKInputSourceChangedCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+        MKUpdateInputSourceCache();
+    }
+
+    void AXReloadIncludedApps() {
+        NSArray* apps = [[NSUserDefaults standardUserDefaults] stringArrayForKey:@"axIncludeApps"];
+        _axIncludedApps = apps != nil ? [apps copy] : @[];
+    }
 
     void AXInvalidateFocusCache() {
         if (_axCachedFocused) { CFRelease(_axCachedFocused); _axCachedFocused = NULL; }
         _axCachedIsSlow = false;
+        _axCachedIsIncluded = false;
         _axCacheTime = 0;
     }
 
+    bool AXAppIsIncluded(NSString* bid) {
+        if (bid == nil)
+            return false;
+        for (NSString* included in _axIncludedApps) {
+            if ([bid isEqualToString:included] || [bid hasPrefix:included]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     //look up the AX-focused element and whether it belongs to a slow-path app;
-    //cached for 0.5s so fast typing costs one IPC lookup per burst
+    //cached so fast typing costs only one IPC lookup per burst.
+    //We skip updating the cache if the user is currently typing continuously
+    //(keystrokes less than 0.5s apart) or if the cache is less than 2.0s old.
     void AXRefreshFocusCache() {
         CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-        if (_axCacheTime != 0 && (now - _axCacheTime) < 0.5)
+        if (_axCacheTime != 0 && ((now - _axCacheTime) < 2.0 || (now - _lastKeystrokeTime) < 0.5))
             return;
         AXInvalidateFocusCache();
         _axCacheTime = now;
@@ -97,8 +127,15 @@ extern "C" {
         _axCachedFocused = focused;
         pid_t pid = 0;
         if (AXUIElementGetPid(focused, &pid) == kAXErrorSuccess) {
-            NSString* bid = [NSRunningApplication runningApplicationWithProcessIdentifier:pid].bundleIdentifier;
+            NSString* bid = nil;
+            if (pid == _frontMostPid && _frontMostApp != nil) {
+                bid = _frontMostApp;
+            } else {
+                bid = [NSRunningApplication runningApplicationWithProcessIdentifier:pid].bundleIdentifier;
+            }
             _axCachedIsSlow = (bid != nil) && [_slowPathApp containsObject:bid];
+            _axCachedIsIncluded = AXAppIsIncluded(bid);
+            
             if (_axCachedIsSlow && _axLoggedPid != pid) {
                 NSLog(@"mkey: AX direct-edit path active for %@ (pid %d)", bid, pid);
                 _axLoggedPid = pid;
@@ -107,9 +144,15 @@ extern "C" {
     }
 
     bool AXSlowPathActive() {
-        if (!vFixSpotlight || vCodeTable != 0)
+        if (vCodeTable != 0)
             return false;
         AXRefreshFocusCache();
+        if (!vUseAXReplacement)
+            return false;
+        if (_axCachedIsIncluded)
+            return _axCachedFocused != NULL;
+        if (!vFixSpotlight)
+            return false;
         return _axCachedIsSlow;
     }
 
@@ -117,6 +160,8 @@ extern "C" {
     vKeyHookState* pData;
     CGEventRef eventBackSpaceDown;
     CGEventRef eventBackSpaceUp;
+    CGEventRef eventCharDown = NULL;
+    CGEventRef eventCharUp = NULL;
     UniChar _newChar, _newCharHi;
     CGEventRef _newEventDown, _newEventUp;
     CGKeyCode _keycode;
@@ -128,7 +173,26 @@ extern "C" {
     bool _willContinuteSending = false;
     bool _willSendControlKey = false;
 
-    vector<Uint16> _syncKey;
+    struct SyncKeyArray {
+        Uint16 data[128];
+        size_t count = 0;
+
+        void clear() { count = 0; }
+        void push_back(Uint16 val) {
+            if (count < 128) {
+                data[count++] = val;
+            }
+        }
+        Uint16 back() const {
+            if (count > 0) return data[count - 1];
+            return 0;
+        }
+        void pop_back() {
+            if (count > 0) count--;
+        }
+        size_t size() const { return count; }
+    };
+    SyncKeyArray _syncKey;
 
     Uint16 _uniChar[2];
     int _i, _j, _k;
@@ -138,7 +202,6 @@ extern "C" {
     int _languageTemp = 0; //use for smart switch key
     vector<Byte> savedSmartSwitchKeyData; //use for smart switch key
 
-    NSString* _frontMostApp = @"UnknownApp";
 
     /**
      * Atomically replace `deleteCount` characters before the caret (plus any
@@ -302,6 +365,8 @@ extern "C" {
         LOAD_DATA(vFixChromiumBrowser, vFixChromiumBrowser);
         LOAD_DATA(vPerformLayoutCompat, vPerformLayoutCompat);
         LOAD_DATA(vFixSpotlight, vFixSpotlight);
+        LOAD_DATA(vUseAXReplacement, vUseAXReplacement);
+        AXReloadIncludedApps();
 
         LOAD_DATA(vSwitchKeyStatus, SwitchKeyStatus);
         if (vSwitchKeyStatus == 0)
@@ -311,6 +376,8 @@ extern "C" {
             myEventSource = CGEventSourceCreate(kCGEventSourceStatePrivate);
             eventBackSpaceDown = CGEventCreateKeyboardEvent (myEventSource, 51, true);
             eventBackSpaceUp = CGEventCreateKeyboardEvent (myEventSource, 51, false);
+            eventCharDown = CGEventCreateKeyboardEvent (myEventSource, 0, true);
+            eventCharUp = CGEventCreateKeyboardEvent (myEventSource, 0, false);
         }
         pData = (vKeyHookState*)vKeyInit();
 
@@ -336,28 +403,30 @@ extern "C" {
         if (convertToolHotKey == 0) {
             convertToolHotKey = EMPTY_HOTKEY;
         }
+
+        MKUpdateInputSourceCache();
+
+        if (!_inputSourceObserverInstalled) {
+            CFNotificationCenterAddObserver(
+                CFNotificationCenterGetDarwinNotifyCenter(),
+                NULL,
+                MKInputSourceChangedCallback,
+                kTISNotifySelectedKeyboardInputSourceChanged,
+                NULL,
+                CFNotificationSuspensionBehaviorDeliverImmediately
+            );
+            _inputSourceObserverInstalled = true;
+        }
     }
 
     void RequestNewSession() {
+        AXInvalidateFocusCache();
         //send event signal to Engine
         vKeyHandleEvent(vKeyEvent::Mouse, vKeyEventState::MouseDown, 0);
 
         if (IS_DOUBLE_CODE(vCodeTable)) { //VNI
             _syncKey.clear();
         }
-    }
-
-    void queryFrontMostApp() {
-        if ([[[NSWorkspace sharedWorkspace] frontmostApplication].bundleIdentifier compare:[[NSBundle mainBundle] bundleIdentifier]] != 0) {
-            _frontMostApp = [[NSWorkspace sharedWorkspace] frontmostApplication].bundleIdentifier;
-            if (_frontMostApp == nil)
-                _frontMostApp = [[NSWorkspace sharedWorkspace] frontmostApplication].localizedName != nil ?
-                [[NSWorkspace sharedWorkspace] frontmostApplication].localizedName : @"UnknownApp";
-        }
-    }
-
-    NSString* ConvertUtil(NSString* str) {
-        return [NSString stringWithUTF8String:convertUtil([str UTF8String]).c_str()];
     }
 
     BOOL containUnicodeCompoundApp(NSString* topApp) {
@@ -369,6 +438,43 @@ extern "C" {
         return false;
     }
 
+    void updateFrontMostAppFlags() {
+        _frontMostIsNiceSpace = [_niceSpaceApp containsObject:_frontMostApp];
+        _frontMostIsUnicodeCompound = containUnicodeCompoundApp(_frontMostApp);
+        _frontMostNeedsChromiumFix = [_unicodeCompoundApp containsObject:_frontMostApp];
+    }
+
+    void queryFrontMostApp() {
+        NSRunningApplication* app = [[NSWorkspace sharedWorkspace] frontmostApplication];
+        NSString* bundleIdentifier = app.bundleIdentifier;
+        if (bundleIdentifier == nil || [bundleIdentifier compare:[[NSBundle mainBundle] bundleIdentifier]] != 0) {
+            _frontMostApp = bundleIdentifier;
+            if (_frontMostApp == nil)
+                _frontMostApp = app.localizedName != nil ? app.localizedName : @"UnknownApp";
+            _frontMostPid = app.processIdentifier;
+            updateFrontMostAppFlags();
+        }
+    }
+
+    void updateFrontMostAppForEvent(CGEventRef event) {
+        pid_t pid = (pid_t)CGEventGetIntegerValueField(event, kCGEventTargetUnixProcessID);
+        if (pid <= 0 || pid == _frontMostPid)
+            return;
+        NSRunningApplication* app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+        NSString* bundleIdentifier = app.bundleIdentifier;
+        if (bundleIdentifier == nil || [bundleIdentifier compare:[[NSBundle mainBundle] bundleIdentifier]] != 0) {
+            _frontMostApp = bundleIdentifier;
+            if (_frontMostApp == nil)
+                _frontMostApp = app.localizedName != nil ? app.localizedName : @"UnknownApp";
+            _frontMostPid = pid;
+            updateFrontMostAppFlags();
+        }
+    }
+
+    NSString* ConvertUtil(NSString* str) {
+        return [NSString stringWithUTF8String:convertUtil([str UTF8String]).c_str()];
+    }
+
     void saveSmartSwitchKeyData() {
         getSmartSwitchKeySaveData(savedSmartSwitchKeyData);
         NSData* _data = [NSData dataWithBytes:savedSmartSwitchKeyData.data() length:savedSmartSwitchKeyData.size()];
@@ -377,6 +483,9 @@ extern "C" {
     }
 
     void OnActiveAppChanged() { //use for smart switch key
+        AXInvalidateFocusCache();
+        AXReloadIncludedApps();
+        MKUpdateInputSourceCache();
         queryFrontMostApp();
         _languageTemp = getAppInputMethodStatus(string(_frontMostApp.UTF8String), vLanguage | (vCodeTable << 1));
         if ((_languageTemp & 0x01) != vLanguage) { //for input method
@@ -423,14 +532,10 @@ extern "C" {
     }
 
     void SendPureCharacter(const Uint16& ch) {
-        _newEventDown = CGEventCreateKeyboardEvent(myEventSource, 0, true);
-        _newEventUp = CGEventCreateKeyboardEvent(myEventSource, 0, false);
-        CGEventKeyboardSetUnicodeString(_newEventDown, 1, &ch);
-        CGEventKeyboardSetUnicodeString(_newEventUp, 1, &ch);
-        CGEventTapPostEvent(_proxy, _newEventDown);
-        CGEventTapPostEvent(_proxy, _newEventUp);
-        CFRelease(_newEventDown);
-        CFRelease(_newEventUp);
+        CGEventKeyboardSetUnicodeString(eventCharDown, 1, &ch);
+        CGEventKeyboardSetUnicodeString(eventCharUp, 1, &ch);
+        CGEventTapPostEvent(_proxy, eventCharDown);
+        CGEventTapPostEvent(_proxy, eventCharUp);
         if (IS_DOUBLE_CODE(vCodeTable)) {
             InsertKeyLength(1);
         }
@@ -513,18 +618,14 @@ extern "C" {
             InsertKeyLength(1);
 
         _newChar = 0x202F; //empty char
-        if ([_niceSpaceApp containsObject:FRONT_APP]) {
+        if (_frontMostIsNiceSpace) {
             _newChar = 0x200C; //Unicode character with empty space
         }
 
-        _newEventDown = CGEventCreateKeyboardEvent(myEventSource, 0, true);
-        _newEventUp = CGEventCreateKeyboardEvent(myEventSource, 0, false);
-        CGEventKeyboardSetUnicodeString(_newEventDown, 1, &_newChar);
-        CGEventKeyboardSetUnicodeString(_newEventUp, 1, &_newChar);
-        CGEventTapPostEvent(_proxy, _newEventDown);
-        CGEventTapPostEvent(_proxy, _newEventUp);
-        CFRelease(_newEventDown);
-        CFRelease(_newEventUp);
+        CGEventKeyboardSetUnicodeString(eventCharDown, 1, &_newChar);
+        CGEventKeyboardSetUnicodeString(eventCharUp, 1, &_newChar);
+        CGEventTapPostEvent(_proxy, eventCharDown);
+        CGEventTapPostEvent(_proxy, eventCharUp);
     }
 
     void SendBackspace() {
@@ -533,7 +634,7 @@ extern "C" {
 
         if (IS_DOUBLE_CODE(vCodeTable)) { //VNI or Unicode Compound
             if (_syncKey.back() > 1) {
-                if (!(vCodeTable == 3 && containUnicodeCompoundApp(FRONT_APP))) {
+                if (!(vCodeTable == 3 && _frontMostIsUnicodeCompound)) {
                     CGEventTapPostEvent(_proxy, eventBackSpaceDown);
                     CGEventTapPostEvent(_proxy, eventBackSpaceUp);
                 }
@@ -555,7 +656,7 @@ extern "C" {
 
         if (IS_DOUBLE_CODE(vCodeTable)) { //VNI or Unicode Compound
             if (_syncKey.back() > 1) {
-                if (!(vCodeTable == 3 && containUnicodeCompoundApp(FRONT_APP))) {
+                if (!(vCodeTable == 3 && _frontMostIsUnicodeCompound)) {
                     CGEventTapPostEvent(_proxy, eventVkeyDown);
                     CGEventTapPostEvent(_proxy, eventVkeyUp);
                 }
@@ -639,14 +740,10 @@ extern "C" {
             startNewSession();
         }
 
-        _newEventDown = CGEventCreateKeyboardEvent(myEventSource, 0, true);
-        _newEventUp = CGEventCreateKeyboardEvent(myEventSource, 0, false);
-        CGEventKeyboardSetUnicodeString(_newEventDown, _willContinuteSending ? 16 : _newCharSize - offset, _newCharString);
-        CGEventKeyboardSetUnicodeString(_newEventUp, _willContinuteSending ? 16 : _newCharSize - offset, _newCharString);
-        CGEventTapPostEvent(_proxy, _newEventDown);
-        CGEventTapPostEvent(_proxy, _newEventUp);
-        CFRelease(_newEventDown);
-        CFRelease(_newEventUp);
+        CGEventKeyboardSetUnicodeString(eventCharDown, _willContinuteSending ? 16 : _newCharSize - offset, _newCharString);
+        CGEventKeyboardSetUnicodeString(eventCharUp, _willContinuteSending ? 16 : _newCharSize - offset, _newCharString);
+        CGEventTapPostEvent(_proxy, eventCharDown);
+        CGEventTapPostEvent(_proxy, eventCharUp);
 
         if (_willContinuteSending) {
             SendNewCharString(dataFromMacro, dataFromMacro ? _k : 16);
@@ -661,13 +758,14 @@ extern "C" {
     bool checkHotKey(int hotKeyData, bool checkKeyCode=true) {
         if ((hotKeyData & (~0x8000)) == EMPTY_HOTKEY)
             return false;
-        if (HAS_CONTROL(hotKeyData) ^ GET_BOOL(_lastFlag & kCGEventFlagMaskControl))
+        CGEventFlags flagsToUse = checkKeyCode ? _flag : _lastFlag;
+        if (HAS_CONTROL(hotKeyData) ^ GET_BOOL(flagsToUse & kCGEventFlagMaskControl))
             return false;
-        if (HAS_OPTION(hotKeyData) ^ GET_BOOL(_lastFlag & kCGEventFlagMaskAlternate))
+        if (HAS_OPTION(hotKeyData) ^ GET_BOOL(flagsToUse & kCGEventFlagMaskAlternate))
             return false;
-        if (HAS_COMMAND(hotKeyData) ^ GET_BOOL(_lastFlag & kCGEventFlagMaskCommand))
+        if (HAS_COMMAND(hotKeyData) ^ GET_BOOL(flagsToUse & kCGEventFlagMaskCommand))
             return false;
-        if (HAS_SHIFT(hotKeyData) ^ GET_BOOL(_lastFlag & kCGEventFlagMaskShift))
+        if (HAS_SHIFT(hotKeyData) ^ GET_BOOL(flagsToUse & kCGEventFlagMaskShift))
             return false;
         if (checkKeyCode) {
             if (GET_SWITCH_KEY(hotKeyData) != _keycode)
@@ -723,17 +821,59 @@ extern "C" {
     }
 
     int ConvertKeyStringToKeyCode(NSString *keyString, CGKeyCode fallback) {
-        // Information about capitalization (shift/caps) is already included
-        // in the original CGEvent, only find out which position on keyboard a key is pressed
-        NSString *lowercasedKeyString = [keyString lowercaseString];
-        if (!lowercasedKeyString) {
-            return fallback;
-        }
-
-        NSNumber *keycode = [keyStringToKeyCodeMap objectForKey:lowercasedKeyString];
-
-        if (keycode) {
-            return [keycode intValue];
+        if (keyString == nil || [keyString length] == 0) return fallback;
+        unichar ch = [keyString characterAtIndex:0];
+        if (ch < 128) {
+            switch (ch) {
+                case 'a': case 'A': return 0;
+                case 'b': case 'B': return 11;
+                case 'c': case 'C': return 8;
+                case 'd': case 'D': return 2;
+                case 'e': case 'E': return 14;
+                case 'f': case 'F': return 3;
+                case 'g': case 'G': return 5;
+                case 'h': case 'H': return 4;
+                case 'i': case 'I': return 34;
+                case 'j': case 'J': return 38;
+                case 'k': case 'K': return 40;
+                case 'l': case 'L': return 37;
+                case 'm': case 'M': return 46;
+                case 'n': case 'N': return 45;
+                case 'o': case 'O': return 31;
+                case 'p': case 'P': return 35;
+                case 'q': case 'Q': return 12;
+                case 'r': case 'R': return 15;
+                case 's': case 'S': return 1;
+                case 't': case 'T': return 17;
+                case 'u': case 'U': return 32;
+                case 'v': case 'V': return 9;
+                case 'w': case 'W': return 13;
+                case 'x': case 'X': return 7;
+                case 'y': case 'Y': return 16;
+                case 'z': case 'Z': return 6;
+                case '1': case '!': return 18;
+                case '2': case '@': return 19;
+                case '3': case '#': return 20;
+                case '4': case '$': return 21;
+                case '5': case '%': return 23;
+                case '6': case '^': return 22;
+                case '7': case '&': return 26;
+                case '8': case '*': return 28;
+                case '9': case '(': return 25;
+                case '0': case ')': return 29;
+                case '`': case '~': return 50;
+                case '-': case '_': return 27;
+                case '=': case '+': return 24;
+                case '[': case '{': return 33;
+                case ']': case '}': return 30;
+                case '\\': case '|': return 42;
+                case ';': case ':': return 41;
+                case '\'': case '"': return 39;
+                case ',': case '<': return 43;
+                case '.': case '>': return 47;
+                case '/': case '?': return 44;
+                default: return fallback;
+            }
         }
         return fallback;
     }
@@ -772,9 +912,18 @@ extern "C" {
         _flag = CGEventGetFlags(event);
         _keycode = (CGKeyCode)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
 
+        CFAbsoluteTime currentKeystrokeTime = 0;
+        if (type == kCGEventKeyDown) {
+            currentKeystrokeTime = CFAbsoluteTimeGetCurrent();
+            updateFrontMostAppForEvent(event);
+            if (OTHER_CONTROL_KEY) {
+                AXInvalidateFocusCache();
+            }
+        }
+
         if (type == kCGEventKeyDown && vPerformLayoutCompat) {
             // If conversion fail, use current keycode
-           _keycode = ConvertEventToKeyboadLayoutCompatKeyCode(event, _keycode);
+            _keycode = ConvertEventToKeyboadLayoutCompatKeyCode(event, _keycode);
         }
 
         //switch language shortcut; convert hotkey
@@ -843,8 +992,12 @@ extern "C" {
 
                 if (pData->code == vReplaceMaro) { //handle macro in english mode
                     handleMacro();
+                    _lastKeystrokeTime = currentKeystrokeTime;
                     return NULL;
                 }
+            }
+            if (type == kCGEventKeyDown) {
+                _lastKeystrokeTime = currentKeystrokeTime;
             }
             return event;
         }
@@ -857,20 +1010,11 @@ extern "C" {
 
         //if "turn off Vietnamese when in other language" mode on
         if(vOtherLanguage){
-            TISInputSourceRef isource = TISCopyCurrentKeyboardInputSource();
-            if ( isource != NULL )
-            {
-                CFArrayRef languages = (CFArrayRef) TISGetInputSourceProperty(isource, kTISPropertyInputSourceLanguages);
-
-                if (CFArrayGetCount(languages) > 0) {
-                    CFStringRef langRef = (CFStringRef)CFArrayGetValueAtIndex(languages, 0);
-                    NSString *currentLanguage = (__bridge NSString *)langRef;
-                    if(![currentLanguage isLike:@"en"]){
-                        return event;
-                    }
-                    CFRelease(langRef);
-                    CFRelease(isource);
+            if (!_cachedIsEnglishLayout) {
+                if (type == kCGEventKeyDown) {
+                    _lastKeystrokeTime = currentKeystrokeTime;
                 }
+                return event;
             }
         }
 
@@ -888,7 +1032,7 @@ extern "C" {
                         _syncKey.clear();
                     } else if (pData->extCode == 2) { //delete key
                         if (_syncKey.size() > 0) {
-                            if (_syncKey.back() > 1 && (vCodeTable == 2 || !containUnicodeCompoundApp(FRONT_APP))) {
+                            if (_syncKey.back() > 1 && (vCodeTable == 2 || !_frontMostIsUnicodeCompound)) {
                                 //send one more backspace
                                 CGEventTapPostEvent(_proxy, eventBackSpaceDown);
                                 CGEventTapPostEvent(_proxy, eventBackSpaceUp);
@@ -900,19 +1044,22 @@ extern "C" {
                         InsertKeyLength(1);
                     }
                 }
+                _lastKeystrokeTime = currentKeystrokeTime;
                 return event;
             } else if (pData->code == vWillProcess || pData->code == vRestore || pData->code == vRestoreAndStartNewSession) { //handle result signal
 
                 //Spotlight-like fields: atomic replacement via Accessibility
                 //beats any event-timing game (no backspace can be swallowed
                 //by the async inline completion). Falls through on failure.
-                if (AXSlowPathActive() && TryAXProcessKey()) {
+                bool axSucceeded = AXSlowPathActive() && TryAXProcessKey();
+                if (axSucceeded) {
+                    _lastKeystrokeTime = currentKeystrokeTime;
                     return NULL;
                 }
 
                 //fix autocomplete
                 if (vFixRecommendBrowser && pData->extCode != 4) {
-                    if (vFixChromiumBrowser && [_unicodeCompoundApp containsObject:FRONT_APP]) {
+                    if (vFixChromiumBrowser && _frontMostNeedsChromiumFix) {
                         if (pData->backspaceCount > 0) {
                             SendShiftAndLeftArrow();
                             if (pData->backspaceCount == 1)
@@ -952,6 +1099,7 @@ extern "C" {
                 handleMacro();
             }
 
+            _lastKeystrokeTime = currentKeystrokeTime;
             return NULL;
         }
 

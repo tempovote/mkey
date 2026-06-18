@@ -31,6 +31,7 @@ settings:
       STRIP_INSTALLED_PRODUCT: YES
       STRIP_STYLE: all
       COPY_PHASE_STRIP: YES
+      LLVM_LTO: YES
 
 targets:
   mkey:
@@ -38,9 +39,6 @@ targets:
     platform: macOS
     sources:
       - path: Sources/Engine
-        excludes:
-          - "platforms/linux.h"
-          - "platforms/win32.h"
       - path: Sources/Platform
       - path: Sources/App
       - path: Sources/Support

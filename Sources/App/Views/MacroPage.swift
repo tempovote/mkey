@@ -16,6 +16,8 @@ struct MacroRow: Identifiable, Hashable {
 
 struct MacroPage: View {
     @EnvironmentObject private var state: AppState
+    @ObservedObject private var cloudSync = MacroCloudSync.shared
+    @AppStorage("macroCloudSyncEnabled") private var macroCloudSyncEnabled = true
 
     @State private var rows: [MacroRow] = []
     @State private var selection: MacroRow.ID?
@@ -39,6 +41,26 @@ struct MacroPage: View {
                         .disabled(!state.useMacro)
                     Toggle("Tự hoa theo từ gốc (btw→by the way, Btw→By the way)", isOn: $state.autoCapsMacro)
                         .disabled(!state.useMacro)
+                }
+
+                Section("Đồng bộ") {
+                    Toggle("Đồng bộ danh sách gõ tắt qua iCloud Drive", isOn: $macroCloudSyncEnabled)
+                        .onChange(of: macroCloudSyncEnabled) { _, enabled in
+                            cloudSync.setEnabled(enabled)
+                        }
+
+                    HStack(spacing: 8) {
+                        Image(systemName: cloudSync.isAvailable ? "checkmark.icloud" : "icloud.slash")
+                            .foregroundStyle(cloudSync.isAvailable ? Color.accentColor : .secondary)
+                        Text(cloudSync.statusText)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                        Spacer()
+                        Button("Đồng bộ ngay") {
+                            cloudSync.syncNow()
+                        }
+                        .disabled(!macroCloudSyncEnabled)
+                    }
                 }
 
                 Section("Thêm / sửa gõ tắt") {
@@ -102,7 +124,12 @@ struct MacroPage: View {
         }
         .onAppear {
             reload()
+            cloudSync.start()
+            cloudSync.setEnabled(macroCloudSyncEnabled)
             focusedField = .text
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .mkMacroCloudSyncDidImport)) { _ in
+            reload()
         }
         .alert("Gõ tắt", isPresented: .init(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
             Button("OK", role: .cancel) {}
@@ -127,6 +154,7 @@ struct MacroPage: View {
         newContent = ""
         selection = nil
         reload()
+        cloudSync.localMacrosDidChange()
         focusedField = .text
     }
 
@@ -143,6 +171,7 @@ struct MacroPage: View {
         newContent = ""
         selection = nil
         reload()
+        cloudSync.localMacrosDidChange()
     }
 
     private func importFromFile() {
@@ -160,6 +189,7 @@ struct MacroPage: View {
         let keep = alert.runModal() == .alertFirstButtonReturn
         MKBridge.importMacros(fromFile: url.path, append: keep)
         reload()
+        cloudSync.localMacrosDidChange()
     }
 
     private func exportToFile() {
@@ -170,4 +200,148 @@ struct MacroPage: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         MKBridge.exportMacros(toFile: url.path)
     }
+}
+
+@MainActor
+final class MacroCloudSync: ObservableObject {
+    static let shared = MacroCloudSync()
+
+    @Published private(set) var statusText = "Sẵn sàng đồng bộ qua iCloud Drive."
+    @Published private(set) var isAvailable = true
+    @Published private(set) var lastSyncDate: Date?
+
+    private struct FileSignature: Equatable {
+        let modifiedAt: Date?
+        let size: Int64
+    }
+
+    private let defaults = UserDefaults.standard
+    private let enabledKey = "macroCloudSyncEnabled"
+    private let pollInterval: TimeInterval = 10
+    private var timer: Timer?
+    private var lastSignature: FileSignature?
+
+    private var isEnabled: Bool {
+        defaults.object(forKey: enabledKey) as? Bool ?? true
+    }
+
+    private var iCloudDriveRootURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
+    }
+
+    private var syncFolderURL: URL {
+        iCloudDriveRootURL.appendingPathComponent("mkey", isDirectory: true)
+    }
+
+    private var syncFileURL: URL {
+        syncFolderURL.appendingPathComponent("mkeyMacroData.bin")
+    }
+
+    private init() {}
+
+    func start() {
+        guard timer == nil else { return }
+        timer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.importIfCloudChanged() }
+        }
+        syncNow()
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        defaults.set(enabled, forKey: enabledKey)
+        if enabled {
+            syncNow()
+        } else {
+            statusText = "Đồng bộ iCloud Drive đang tắt."
+            isAvailable = true
+        }
+    }
+
+    func syncNow() {
+        guard isEnabled else {
+            statusText = "Đồng bộ iCloud Drive đang tắt."
+            return
+        }
+
+        guard ensureSyncFolderExists() else { return }
+
+        if FileManager.default.fileExists(atPath: syncFileURL.path) {
+            importFromCloud(force: true)
+        } else {
+            exportToCloud()
+        }
+    }
+
+    func localMacrosDidChange() {
+        guard isEnabled else { return }
+        exportToCloud()
+    }
+
+    private func importIfCloudChanged() {
+        guard isEnabled, ensureSyncFolderExists() else { return }
+        guard FileManager.default.fileExists(atPath: syncFileURL.path) else {
+            exportToCloud()
+            return
+        }
+        importFromCloud(force: false)
+    }
+
+    private func importFromCloud(force: Bool) {
+        guard let signature = fileSignature(at: syncFileURL) else {
+            statusText = "Chưa có dữ liệu gõ tắt trên iCloud Drive."
+            return
+        }
+        guard force || signature != lastSignature else { return }
+
+        MKBridge.importMacros(fromFile: syncFileURL.path, append: false)
+        lastSignature = signature
+        lastSyncDate = Date()
+        isAvailable = true
+        statusText = "Đã cập nhật từ iCloud Drive."
+        NotificationCenter.default.post(name: .mkMacroCloudSyncDidImport, object: nil)
+    }
+
+    private func exportToCloud() {
+        guard ensureSyncFolderExists() else { return }
+
+        MKBridge.exportMacros(toFile: syncFileURL.path)
+        lastSignature = fileSignature(at: syncFileURL)
+        lastSyncDate = Date()
+        isAvailable = true
+        statusText = "Đã lưu danh sách gõ tắt lên iCloud Drive."
+    }
+
+    private func ensureSyncFolderExists() -> Bool {
+        let manager = FileManager.default
+        guard manager.fileExists(atPath: iCloudDriveRootURL.path) else {
+            isAvailable = false
+            statusText = "Không tìm thấy iCloud Drive trên máy này."
+            return false
+        }
+
+        do {
+            try manager.createDirectory(at: syncFolderURL, withIntermediateDirectories: true)
+            isAvailable = true
+            return true
+        } catch {
+            isAvailable = false
+            statusText = "Không thể tạo thư mục đồng bộ trong iCloud Drive."
+            NSLog("mkey: cannot create macro sync folder: \(error)")
+            return false
+        }
+    }
+
+    private func fileSignature(at url: URL) -> FileSignature? {
+        do {
+            let values = try url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            return FileSignature(modifiedAt: values.contentModificationDate, size: Int64(values.fileSize ?? 0))
+        } catch {
+            return nil
+        }
+    }
+}
+
+extension Notification.Name {
+    static let mkMacroCloudSyncDidImport = Notification.Name("MKMacroCloudSyncDidImport")
 }
