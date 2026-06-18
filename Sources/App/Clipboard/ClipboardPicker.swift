@@ -515,7 +515,107 @@ private struct PickerRow: View {
                 .foregroundStyle(isSelected ? .white.opacity(0.85) : .secondary)
                 .frame(width: 18, alignment: .trailing)
 
-            if item.isImage, let url = imageURL(item), let nsImage = ClipThumbnail.image(for: url) {
+            if let filePaths = item.filePaths, filePaths.count > 1 {
+                ZStack {
+                    // Bottom card (Layer 3) - offset up-right
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(
+                            isSelected
+                            ? Color.white.opacity(0.12)
+                            : Color(nsColor: .quaternaryLabelColor).opacity(0.35)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(
+                                    isSelected
+                                    ? Color.white.opacity(0.25)
+                                    : Color.secondary.opacity(0.15),
+                                    lineWidth: 0.5
+                                )
+                        )
+                        .frame(width: 48, height: 34)
+                        .offset(x: 2, y: -2)
+
+                    // Middle card (Layer 2) - centered
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(
+                            isSelected
+                            ? Color.white.opacity(0.16)
+                            : Color(nsColor: .quaternaryLabelColor).opacity(0.45)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(
+                                    isSelected
+                                    ? Color.white.opacity(0.3)
+                                    : Color.secondary.opacity(0.2),
+                                    lineWidth: 0.5
+                                )
+                        )
+                        .frame(width: 48, height: 34)
+                        .offset(x: 0, y: 0)
+
+                    // Top card (Layer 1 - Main) - offset down-left
+                    ZStack {
+                        if let url = imageURL(item), let nsImage = ClipThumbnail.image(for: url) {
+                            Image(nsImage: nsImage)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 48, height: 34)
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                        } else {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(
+                                    isSelected
+                                    ? Color.white.opacity(0.2)
+                                    : Color(nsColor: .quaternaryLabelColor).opacity(0.5)
+                                )
+                            Image(systemName: "doc.on.doc.fill")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundStyle(isSelected ? Color.white.opacity(0.9) : Color.secondary)
+                        }
+                    }
+                    .frame(width: 48, height: 34)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(
+                                isSelected
+                                ? Color.white.opacity(0.4)
+                                : Color.secondary.opacity(0.25),
+                                lineWidth: 0.5
+                            )
+                    )
+                    .offset(x: -2, y: 2)
+
+                    // File count badge in the bottom-right corner of the stack container
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Spacer()
+                            Text("\(filePaths.count)")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(Color.white)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(
+                                    Capsule()
+                                        .fill(
+                                            isSelected
+                                            ? Color.orange
+                                            : Color.black.opacity(0.75)
+                                        )
+                                )
+                                .overlay(
+                                    Capsule()
+                                        .stroke(Color.white.opacity(0.3), lineWidth: 0.5)
+                                )
+                        }
+                    }
+                    .padding(.trailing, 2)
+                    .padding(.bottom, 2)
+                }
+                .frame(width: 52, height: 38)
+            } else if let url = imageURL(item), let nsImage = ClipThumbnail.image(for: url) {
                 Image(nsImage: nsImage)
                     .resizable()
                     .aspectRatio(contentMode: .fill)

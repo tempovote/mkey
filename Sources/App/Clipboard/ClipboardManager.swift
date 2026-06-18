@@ -21,29 +21,31 @@ struct ClipItem: Identifiable, Codable, Equatable {
     let htmlText: String?    // HTML content for rich text items
     let imageFile: String?   // PNG filename (in the clipboard dir) for image items
     let filePath: String?    // original file path of the copied image file
+    let filePaths: [String]? // original file paths of copied files
     let date: Date           // when it was captured
     let sourceApp: String?   // app that owned the clipboard at capture time
 
     init(text: String, htmlText: String? = nil, source: String?) {
-        id = UUID(); isImage = false; self.text = text; self.htmlText = htmlText; imageFile = nil; filePath = nil; date = Date(); sourceApp = source
+        id = UUID(); isImage = false; self.text = text; self.htmlText = htmlText; imageFile = nil; filePath = nil; filePaths = nil; date = Date(); sourceApp = source
     }
     init(imageFile: String, label: String, filePath: String? = nil, source: String?) {
-        id = UUID(); isImage = true; text = label; self.imageFile = imageFile; self.filePath = filePath; date = Date(); sourceApp = source; htmlText = nil
+        id = UUID(); isImage = true; text = label; self.imageFile = imageFile; self.filePath = filePath; filePaths = nil; date = Date(); sourceApp = source; htmlText = nil
     }
-    init(id: UUID, isImage: Bool, text: String, htmlText: String?, imageFile: String?, filePath: String?, date: Date, sourceApp: String?) {
+    init(id: UUID, isImage: Bool, text: String, htmlText: String?, imageFile: String?, filePath: String?, filePaths: [String]?, date: Date, sourceApp: String?) {
         self.id = id
         self.isImage = isImage
         self.text = text
         self.htmlText = htmlText
         self.imageFile = imageFile
         self.filePath = filePath
+        self.filePaths = filePaths
         self.date = date
         self.sourceApp = sourceApp
     }
 
     // Custom decode keeps backward compatibility with items saved before
-    // date/sourceApp/filePath/htmlText existed.
-    enum CodingKeys: String, CodingKey { case id, isImage, text, htmlText, imageFile, filePath, date, sourceApp }
+    // date/sourceApp/filePath/htmlText/filePaths existed.
+    enum CodingKeys: String, CodingKey { case id, isImage, text, htmlText, imageFile, filePath, filePaths, date, sourceApp }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -52,6 +54,7 @@ struct ClipItem: Identifiable, Codable, Equatable {
         htmlText = try c.decodeIfPresent(String.self, forKey: .htmlText)
         imageFile = try c.decodeIfPresent(String.self, forKey: .imageFile)
         filePath = try c.decodeIfPresent(String.self, forKey: .filePath)
+        filePaths = try c.decodeIfPresent([String].self, forKey: .filePaths)
         date = try c.decodeIfPresent(Date.self, forKey: .date) ?? Date()
         sourceApp = try c.decodeIfPresent(String.self, forKey: .sourceApp)
     }
@@ -258,7 +261,7 @@ final class ClipboardManager: ObservableObject {
                 
                 await MainActor.run {
                     guard ClipboardManager.shared.pasteboard.changeCount == changeCountAtStart else { return }
-                    ClipboardManager.shared.addGeneralFile(png, originalURL: fileURL, source: source)
+                    ClipboardManager.shared.addGeneralFiles(png, originalURLs: urls, source: source)
                 }
             }
             return
@@ -343,30 +346,54 @@ final class ClipboardManager: ObservableObject {
         applyTrimmed(next)
     }
 
-    private func addGeneralFile(_ png: Data, originalURL: URL, source: String?) {
+    private func addGeneralFiles(_ png: Data, originalURLs: [URL], source: String?) {
         let filename = "\(UUID().uuidString).png"
         let url = imageDir.appendingPathComponent(filename)
         do { try png.write(to: url) } catch { return }
 
         let label: String
-        var isDir: ObjCBool = false
-        if FileManager.default.fileExists(atPath: originalURL.path, isDirectory: &isDir), isDir.boolValue {
-            label = "Thư mục: \(originalURL.lastPathComponent)"
-        } else if let type = UTType(filenameExtension: originalURL.pathExtension) {
-            if type.conforms(to: .image) {
-                label = "File ảnh: \(originalURL.lastPathComponent)"
-            } else if type.conforms(to: .pdf) {
-                label = "File PDF: \(originalURL.lastPathComponent)"
+        let count = originalURLs.count
+        if count == 1 {
+            let originalURL = originalURLs[0]
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: originalURL.path, isDirectory: &isDir), isDir.boolValue {
+                label = "Thư mục: \(originalURL.lastPathComponent)"
+            } else if let type = UTType(filenameExtension: originalURL.pathExtension) {
+                if type.conforms(to: .image) {
+                    label = "File ảnh: \(originalURL.lastPathComponent)"
+                } else if type.conforms(to: .pdf) {
+                    label = "File PDF: \(originalURL.lastPathComponent)"
+                } else {
+                    label = "File: \(originalURL.lastPathComponent)"
+                }
             } else {
                 label = "File: \(originalURL.lastPathComponent)"
             }
         } else {
-            label = "File: \(originalURL.lastPathComponent)"
+            if count == 2 {
+                label = "\(originalURLs[0].lastPathComponent), \(originalURLs[1].lastPathComponent)"
+            } else {
+                label = "\(originalURLs[0].lastPathComponent), \(originalURLs[1].lastPathComponent) và \(count - 2) tệp tin khác"
+            }
         }
 
         var next = items
-        next = next.filter { $0.filePath != originalURL.path }
-        next.insert(ClipItem(imageFile: filename, label: label, filePath: originalURL.path, source: source), at: 0)
+        let paths = originalURLs.map { $0.path }
+        next = next.filter { $0.filePath != originalURLs[0].path }
+        
+        let newItem = ClipItem(
+            id: UUID(),
+            isImage: false,
+            text: label,
+            htmlText: nil,
+            imageFile: filename,
+            filePath: originalURLs[0].path,
+            filePaths: paths,
+            date: Date(),
+            sourceApp: source
+        )
+        
+        next.insert(newItem, at: 0)
         applyTrimmed(next)
     }
 
@@ -434,6 +461,7 @@ final class ClipboardManager: ObservableObject {
             htmlText: nil,
             imageFile: oldItem.imageFile,
             filePath: oldItem.filePath,
+            filePaths: oldItem.filePaths,
             date: oldItem.date,
             sourceApp: oldItem.sourceApp
         )
@@ -475,21 +503,25 @@ final class ClipboardManager: ObservableObject {
     func paste(_ item: ClipItem, into previousApp: NSRunningApplication?) {
         pasteboard.clearContents()
         
-        let pbItem = NSPasteboardItem()
+        var pbItems: [NSPasteboardItem] = []
         var hasData = false
-        var activeFilePath: String? = nil
+        var activeFilePaths: [String] = []
         
         let isTargetFinder = previousApp?.bundleIdentifier == "com.apple.finder"
         
-        if let filePath = item.filePath, FileManager.default.fileExists(atPath: filePath) {
-            activeFilePath = filePath
-        } else if isTargetFinder {
+        if let filePaths = item.filePaths, !filePaths.isEmpty {
+            activeFilePaths = filePaths.filter { FileManager.default.fileExists(atPath: $0) }
+        } else if let filePath = item.filePath, FileManager.default.fileExists(atPath: filePath) {
+            activeFilePaths = [filePath]
+        }
+        
+        if activeFilePaths.isEmpty && isTargetFinder {
             if item.isImage, let url = imageURL(for: item) {
                 let tempDir = FileManager.default.temporaryDirectory
                 let timestamp = Int(Date().timeIntervalSince1970)
                 let tempFileURL = tempDir.appendingPathComponent("Anh_Clipboard_\(timestamp).png")
                 if let data = try? Data(contentsOf: url), (try? data.write(to: tempFileURL)) != nil {
-                    activeFilePath = tempFileURL.path
+                    activeFilePaths = [tempFileURL.path]
                 }
             } else if !item.isImage {
                 let tempDir = FileManager.default.temporaryDirectory
@@ -499,44 +531,55 @@ final class ClipboardManager: ObservableObject {
                    let rtfData = ClipboardManager.convertHTMLToRTF(htmlText) {
                     let tempFileURL = tempDir.appendingPathComponent("Van_ban_Clipboard_\(timestamp).rtf")
                     if (try? rtfData.write(to: tempFileURL)) != nil {
-                        activeFilePath = tempFileURL.path
+                        activeFilePaths = [tempFileURL.path]
                     }
                 }
                 
-                if activeFilePath == nil {
+                if activeFilePaths.isEmpty {
                     let tempFileURL = tempDir.appendingPathComponent("Van_ban_Clipboard_\(timestamp).txt")
                     if (try? item.text.write(to: tempFileURL, atomically: true, encoding: .utf8)) != nil {
-                        activeFilePath = tempFileURL.path
+                        activeFilePaths = [tempFileURL.path]
                     }
                 }
             }
         }
         
-        if let filePath = activeFilePath {
-            let fileURL = URL(fileURLWithPath: filePath)
-            pbItem.setString(fileURL.absoluteString, forType: .fileURL)
-            pbItem.setPropertyList([filePath], forType: NSPasteboard.PasteboardType("NSFilenamesPboardType"))
+        if !activeFilePaths.isEmpty {
+            for path in activeFilePaths {
+                let fileItem = NSPasteboardItem()
+                let fileURL = URL(fileURLWithPath: path)
+                fileItem.setString(fileURL.absoluteString, forType: .fileURL)
+                fileItem.setPropertyList([path], forType: NSPasteboard.PasteboardType("NSFilenamesPboardType"))
+                pbItems.append(fileItem)
+            }
             hasData = true
         }
         
         if item.isImage {
             if let url = imageURL(for: item), let data = try? Data(contentsOf: url) {
-                pbItem.setData(data, forType: .png)
+                let imageItem = NSPasteboardItem()
+                imageItem.setData(data, forType: .png)
                 if let image = NSImage(data: data), let tiffData = image.tiffRepresentation {
-                    pbItem.setData(tiffData, forType: .tiff)
+                    imageItem.setData(tiffData, forType: .tiff)
                 }
+                pbItems.append(imageItem)
                 hasData = true
             }
-        } else {
-            pbItem.setString(item.text, forType: .string)
+        } else if activeFilePaths.isEmpty {
+            let textItem = NSPasteboardItem()
+            textItem.setString(item.text, forType: .string)
             if let htmlText = item.htmlText {
-                pbItem.setString(htmlText, forType: .html)
+                textItem.setString(htmlText, forType: .html)
             }
+            pbItems.append(textItem)
             hasData = true
         }
         
         if hasData {
-            pasteboard.writeObjects([pbItem])
+            pasteboard.writeObjects(pbItems)
+            if !activeFilePaths.isEmpty {
+                pasteboard.setPropertyList(activeFilePaths, forType: NSPasteboard.PasteboardType("NSFilenamesPboardType"))
+            }
         } else {
             pasteboard.setString(item.text, forType: .string)
             if let htmlText = item.htmlText {
