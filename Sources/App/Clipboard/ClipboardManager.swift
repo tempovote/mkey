@@ -186,8 +186,48 @@ final class ClipboardManager: ObservableObject {
         let source = NSWorkspace.shared.frontmostApplication?.localizedName
         if let text = pasteboard.string(forType: .string), !text.isEmpty {
             addText(text, source: source)
-        } else if let png = currentImagePNG() {
-            addImage(png, source: source)
+            return
+        }
+
+        guard let types = pasteboard.types else { return }
+        let hasImage = types.contains(.png) || types.contains(.tiff)
+        if hasImage {
+            let changeCountAtStart = pasteboard.changeCount
+            Task.detached(priority: .background) {
+                let pb = NSPasteboard.general
+                guard pb.changeCount == changeCountAtStart else { return }
+
+                var imgData: Data? = nil
+                var isPNG = false
+
+                if pb.types?.contains(.png) == true, let png = pb.data(forType: .png) {
+                    imgData = png
+                    isPNG = true
+                } else if pb.types?.contains(.tiff) == true, let tiff = pb.data(forType: .tiff) {
+                    imgData = tiff
+                    isPNG = false
+                }
+
+                guard let data = imgData, data.count <= ClipboardManager.maxImageBytes else { return }
+
+                let pngToWrite: Data?
+                if isPNG {
+                    pngToWrite = data
+                } else {
+                    if let rep = NSBitmapImageRep(data: data) {
+                        pngToWrite = rep.representation(using: .png, properties: [:])
+                    } else {
+                        pngToWrite = nil
+                    }
+                }
+
+                guard let png = pngToWrite, png.count <= ClipboardManager.maxImageBytes else { return }
+
+                await MainActor.run {
+                    guard ClipboardManager.shared.pasteboard.changeCount == changeCountAtStart else { return }
+                    ClipboardManager.shared.addImage(png, source: source)
+                }
+            }
         }
     }
 
@@ -200,20 +240,6 @@ final class ClipboardManager: ObservableObject {
                        "com.agilebits.onepassword",
                        "com.apple.is-sensitive"]
         return names.contains { blocked.contains($0) }
-    }
-
-    private func currentImagePNG() -> Data? {
-        if let png = pasteboard.data(forType: .png) {
-            return png.count <= ClipboardManager.maxImageBytes ? png : nil
-        }
-        if let tiff = pasteboard.data(forType: .tiff),
-           tiff.count <= ClipboardManager.maxImageBytes,
-           let rep = NSBitmapImageRep(data: tiff) {
-            guard let png = rep.representation(using: .png, properties: [:]),
-                  png.count <= ClipboardManager.maxImageBytes else { return nil }
-            return png
-        }
-        return nil
     }
 
     // MARK: Mutations
