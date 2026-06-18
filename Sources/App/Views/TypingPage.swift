@@ -32,7 +32,6 @@ struct TypingPage: View {
                         Text(AppState.inputTypeNames[i]).tag(i)
                     }
                 }
-                .pickerStyle(.segmented)
 
                 Picker("Bảng mã", selection: $state.codeTable) {
                     ForEach(AppState.codeTableNames.indices, id: \.self) { i in
@@ -80,7 +79,7 @@ struct TypingPage: View {
                     VStack(spacing: 0) {
                         if state.axIncludeApps.isEmpty {
                             Text("Chưa có ứng dụng nào, kéo thả ứng dụng vào đây hoặc nhấn nút + để thêm.")
-                                .font(.system(size: 13))
+                                .font(.footnote)
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 10)
@@ -112,9 +111,9 @@ struct TypingPage: View {
                     }
                     .frame(maxWidth: .infinity, minHeight: 116, alignment: .top)
                     .background(Color(nsColor: .controlBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .clipShape(RoundedRectangle(cornerRadius: AppStyle.cardCornerRadius))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 8)
+                        RoundedRectangle(cornerRadius: AppStyle.cardCornerRadius)
                             .stroke(isAXAppDropTargeted ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: 1)
                     )
                     .onDrop(of: [UTType.fileURL], isTargeted: $isAXAppDropTargeted) { providers in
@@ -150,7 +149,7 @@ struct TypingPage: View {
                 }
             }
         }
-        .formStyle(.grouped)
+        .settingsFormStyle()
     }
 
     private func removeAXApp(_ bundleID: String) {
@@ -260,10 +259,10 @@ private struct AXSupportAppRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(app.name)
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .lineLimit(1)
                 Text(app.bundleID)
-                    .font(.system(size: 11))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }

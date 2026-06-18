@@ -40,21 +40,6 @@ private final class KeyablePanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// Behind-window blur so the picker is genuinely translucent (samples the
-/// desktop / windows underneath), unlike SwiftUI's in-app Material.
-private struct VisualEffectBlur: NSViewRepresentable {
-    var material: NSVisualEffectView.Material = .popover
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = material
-        view.blendingMode = .behindWindow
-        view.state = .active
-        return view
-    }
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
-        nsView.material = material
-    }
-}
 
 /// Display + selection state shared between the controller's key monitor and
 /// the SwiftUI list.

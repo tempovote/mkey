@@ -44,7 +44,7 @@ struct SystemPage: View {
                 }
             }
         }
-        .formStyle(.grouped)
+        .settingsFormStyle()
         .confirmationDialog("Bạn có chắc chắn muốn thiết lập lại cấu hình mặc định?",
                             isPresented: $confirmReset, titleVisibility: .visible) {
             Button("Khôi phục mặc định", role: .destructive) {

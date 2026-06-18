@@ -166,6 +166,14 @@ final class ClipboardManager: ObservableObject {
         hotKeyMonitor.register(status: hotKey)
     }
 
+    func suspendHotKey() {
+        hotKeyMonitor.unregister()
+    }
+
+    func resumeHotKey() {
+        updateHotKeyRegistration()
+    }
+
     // MARK: Polling
 
     private func poll() {

@@ -68,7 +68,7 @@ struct ConvertPage: View {
                 }
             }
         }
-        .formStyle(.grouped)
+        .settingsFormStyle()
         .alert("Công cụ chuyển mã", isPresented: .init(get: { resultMessage != nil }, set: { if !$0 { resultMessage = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
