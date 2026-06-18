@@ -54,7 +54,8 @@ struct MenuContent: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Toggle("Tiếng Việt  \(AppState.hotkeyDescription(state.switchKeyStatus))", isOn: $state.isVietnamese)
+        Toggle("Tiếng Việt", isOn: $state.isVietnamese)
+            .dynamicShortcut(state.switchKeyStatus)
 
         Divider()
 
@@ -72,17 +73,19 @@ struct MenuContent: View {
 
         Divider()
 
-        Button("Chuyển mã nhanh  \(AppState.hotkeyDescription(state.convertHotKey))") {
+        Button("Chuyển mã nhanh") {
             MKBridge.engineRequestsQuickConvert()
         }
+        .dynamicShortcut(state.convertHotKey)
 
         Button("Công cụ chuyển mã…") { open(.convert) }
         Button("Gõ tắt…") { open(.macro) }
 
         if clipboard.enabled {
-            Button("Lịch sử Clipboard  \(AppState.hotkeyDescription(clipboard.hotKey))") {
+            Button("Lịch sử Clipboard") {
                 ClipboardManager.shared.togglePicker()
             }
+            .dynamicShortcut(clipboard.hotKey)
         }
 
         Divider()
@@ -237,4 +240,43 @@ final class MkeyAppDelegate: NSObject, NSApplicationDelegate {
 extension Notification.Name {
     static let mkOpenSettingsWindow = Notification.Name("MKOpenSettingsWindow")
     static let mkRequestAccessibility = Notification.Name("MKRequestAccessibility")
+}
+
+extension View {
+    @ViewBuilder
+    func dynamicShortcut(_ status: Int32) -> some View {
+        if let shortcut = ShortcutParser.parse(status) {
+            self.keyboardShortcut(shortcut.key, modifiers: shortcut.modifiers)
+        } else {
+            self
+        }
+    }
+}
+
+private struct ShortcutParser {
+    static func parse(_ status: Int32) -> (key: KeyEquivalent, modifiers: EventModifiers)? {
+        let value = UInt32(bitPattern: status)
+        let char = UInt8((value >> 24) & 0xFF)
+        guard char != 0xFE && char != 0 else { return nil }
+        
+        let key: KeyEquivalent
+        if char == 49 || char == 32 {
+            key = .space
+        } else {
+            let letter = String(UnicodeScalar(char)).lowercased()
+            if let c = letter.first {
+                key = KeyEquivalent(c)
+            } else {
+                key = KeyEquivalent(" ")
+            }
+        }
+        
+        var modifiers: EventModifiers = []
+        if value & 0x100 != 0 { _ = modifiers.insert(.control) }
+        if value & 0x200 != 0 { _ = modifiers.insert(.option) }
+        if value & 0x400 != 0 { _ = modifiers.insert(.command) }
+        if value & 0x800 != 0 { _ = modifiers.insert(.shift) }
+        
+        return (key, modifiers)
+    }
 }
