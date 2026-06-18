@@ -17,7 +17,7 @@ struct MacroRow: Identifiable, Hashable {
 struct MacroPage: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject private var cloudSync = MacroCloudSync.shared
-    @AppStorage("macroCloudSyncEnabled") private var macroCloudSyncEnabled = true
+    @AppStorage("macroCloudSyncEnabled") private var macroCloudSyncEnabled = false
 
     @State private var rows: [MacroRow] = []
     @State private var selection: MacroRow.ID?
@@ -221,8 +221,26 @@ final class MacroCloudSync: ObservableObject {
     private var timer: Timer?
     private var lastSignature: FileSignature?
 
+    // Opt-in: syncing user data must not start without explicit consent.
     private var isEnabled: Bool {
-        defaults.object(forKey: enabledKey) as? Bool ?? true
+        defaults.object(forKey: enabledKey) as? Bool ?? false
+    }
+
+    private enum CloudItem { case downloaded, notDownloaded, missing }
+
+    /// A not-yet-downloaded iCloud file appears only as a hidden ".name.icloud"
+    /// placeholder; treat that as "exists but needs download", never as missing.
+    private func cloudItemState() -> CloudItem {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: syncFileURL.path) { return .downloaded }
+        let placeholder = syncFolderURL.appendingPathComponent(".\(syncFileURL.lastPathComponent).icloud")
+        if fm.fileExists(atPath: placeholder.path) { return .notDownloaded }
+        return .missing
+    }
+
+    private func startDownload() {
+        try? FileManager.default.startDownloadingUbiquitousItem(at: syncFileURL)
+        statusText = "Đang tải dữ liệu gõ tắt từ iCloud Drive…"
     }
 
     private var iCloudDriveRootURL: URL {
@@ -263,13 +281,12 @@ final class MacroCloudSync: ObservableObject {
             statusText = "Đồng bộ iCloud Drive đang tắt."
             return
         }
-
         guard ensureSyncFolderExists() else { return }
 
-        if FileManager.default.fileExists(atPath: syncFileURL.path) {
-            importFromCloud(force: true)
-        } else {
-            exportToCloud()
+        switch cloudItemState() {
+        case .downloaded:   importFromCloud(force: true)
+        case .notDownloaded: startDownload()
+        case .missing:      exportToCloud() // first run: seed cloud from this machine
         }
     }
 
@@ -280,13 +297,14 @@ final class MacroCloudSync: ObservableObject {
 
     private func importIfCloudChanged() {
         guard isEnabled, ensureSyncFolderExists() else { return }
-        guard FileManager.default.fileExists(atPath: syncFileURL.path) else {
-            exportToCloud()
-            return
+        switch cloudItemState() {
+        case .downloaded:   importFromCloud(force: false)
+        case .notDownloaded: startDownload()
+        case .missing:      break // don't auto-overwrite cloud; export only on local change
         }
-        importFromCloud(force: false)
     }
 
+    /// Coordinated read so we never import a half-synced file.
     private func importFromCloud(force: Bool) {
         guard let signature = fileSignature(at: syncFileURL) else {
             statusText = "Chưa có dữ liệu gõ tắt trên iCloud Drive."
@@ -294,18 +312,39 @@ final class MacroCloudSync: ObservableObject {
         }
         guard force || signature != lastSignature else { return }
 
-        MKBridge.importMacros(fromFile: syncFileURL.path, append: false)
-        lastSignature = signature
+        var coordError: NSError?
+        var didImport = false
+        NSFileCoordinator().coordinate(readingItemAt: syncFileURL, options: [.withoutChanges], error: &coordError) { url in
+            MKBridge.importMacros(fromFile: url.path, append: false)
+            didImport = true
+        }
+        guard didImport, coordError == nil else {
+            NSLog("mkey: iCloud read coordination failed: \(String(describing: coordError))")
+            statusText = "Không đọc được dữ liệu từ iCloud Drive."
+            return
+        }
+        lastSignature = fileSignature(at: syncFileURL) ?? signature
         lastSyncDate = Date()
         isAvailable = true
         statusText = "Đã cập nhật từ iCloud Drive."
         NotificationCenter.default.post(name: .mkMacroCloudSyncDidImport, object: nil)
     }
 
+    /// Coordinated write so another process never reads a half-written file.
     private func exportToCloud() {
         guard ensureSyncFolderExists() else { return }
 
-        MKBridge.exportMacros(toFile: syncFileURL.path)
+        var coordError: NSError?
+        var didWrite = false
+        NSFileCoordinator().coordinate(writingItemAt: syncFileURL, options: [.forReplacing], error: &coordError) { url in
+            MKBridge.exportMacros(toFile: url.path)
+            didWrite = true
+        }
+        guard didWrite, coordError == nil else {
+            NSLog("mkey: iCloud write coordination failed: \(String(describing: coordError))")
+            statusText = "Không lưu được dữ liệu lên iCloud Drive."
+            return
+        }
         lastSignature = fileSignature(at: syncFileURL)
         lastSyncDate = Date()
         isAvailable = true
