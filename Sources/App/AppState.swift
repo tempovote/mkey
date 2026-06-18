@@ -381,4 +381,24 @@ final class AppState: ObservableObject {
         }
         return parts.isEmpty ? "—" : parts.joined()
     }
+
+    static func keyboardShortcutModifiers(_ status: Int32) -> EventModifiers {
+        let value = UInt32(bitPattern: status)
+        var modifiers: EventModifiers = []
+        if value & 0x100 != 0 { modifiers.insert(.control) }
+        if value & 0x200 != 0 { modifiers.insert(.option) }
+        if value & 0x400 != 0 { modifiers.insert(.command) }
+        if value & 0x800 != 0 { modifiers.insert(.shift) }
+        return modifiers
+    }
+
+    static func keyboardShortcutKey(_ status: Int32) -> KeyEquivalent? {
+        let value = UInt32(bitPattern: status)
+        let char = UInt8((value >> 24) & 0xFF)
+        if char == 0xFE { return nil }
+        if char == 49 || char == 32 { return .space }
+        let scalar = UnicodeScalar(char)
+        let character = Character(scalar)
+        return KeyEquivalent(character.lowercased().first ?? character)
+    }
 }
