@@ -13,6 +13,8 @@
 #include "Engine.h"
 #import "MKBridge.h"
 
+using namespace std;
+
 #define OTHER_CONTROL_KEY (_flag & kCGEventFlagMaskCommand) || (_flag & kCGEventFlagMaskControl) || \
                             (_flag & kCGEventFlagMaskAlternate) || (_flag & kCGEventFlagMaskSecondaryFn) || \
                             (_flag & kCGEventFlagMaskNumericPad) || (_flag & kCGEventFlagMaskHelp)

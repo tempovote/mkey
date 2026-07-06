@@ -32,6 +32,10 @@ settings:
       STRIP_STYLE: all
       COPY_PHASE_STRIP: YES
       LLVM_LTO: YES
+      # 'none' breaks SwiftUI @EnvironmentObject lookup (fatal error at launch), so use
+      # 'without-names': strips reflection field-name strings for a smaller binary while
+      # keeping the type metadata SwiftUI relies on.
+      SWIFT_REFLECTION_METADATA_LEVEL: without-names
 
 targets:
   mkey:

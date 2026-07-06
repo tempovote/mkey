@@ -260,9 +260,12 @@ final class MacroCloudSync: ObservableObject {
 
     func start() {
         guard timer == nil else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
+        // .common mode so the iCloud poll keeps firing while a modal sheet is presented.
+        let timer = Timer(timeInterval: pollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.importIfCloudChanged() }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
         syncNow()
     }
 

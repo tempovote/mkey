@@ -10,6 +10,8 @@
 #include <string.h>
 #include "Macro.h"
 
+using namespace std;
+
 struct FixedState {
     Uint32 data[MAX_BUFF * 2];
     size_t count;

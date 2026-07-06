@@ -172,12 +172,15 @@ final class MkeyAppDelegate: NSObject, NSApplicationDelegate {
         AXIsProcessTrustedWithOptions(options)
 
         permissionTimer?.invalidate()
-        permissionTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] timer in
+        // .common mode so the poll keeps firing while a modal sheet / menu tracking is up.
+        let timer = Timer(timeInterval: 1.5, repeats: true) { [weak self] timer in
             if AXIsProcessTrusted() {
                 timer.invalidate()
                 Task { @MainActor in self?.startEngine() }
             }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        permissionTimer = timer
     }
 
     // MARK: Notifications

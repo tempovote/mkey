@@ -283,7 +283,9 @@ final class AppState: ObservableObject {
             "vFixSpotlight": 1,
             "vUseAXReplacement": 1,
             "axIncludeApps": [],
-            "macroCloudSyncEnabled": true,
+            // macroCloudSyncEnabled intentionally NOT registered here: iCloud sync is
+            // strictly opt-in (see CloudSyncManager.isEnabled / MacroPage) — it must not
+            // start without explicit user consent, so its default stays false.
             "convertToolAlertWhenCompleted": true,
         ])
     }

@@ -10,6 +10,8 @@
 #include <map>
 #include <memory.h>
 
+using namespace std;
+
 //main data, i use `map` because it has O(Log(n))
 static map<string, Int8> _smartSwitchKeyData;
 static string _cacheKey = ""; //use cache for faster
