@@ -28,8 +28,17 @@ struct MkeyApp: App {
             SettingsRootView()
                 .environmentObject(state)
         }
+        .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
-        .defaultSize(width: 760, height: 520)
+        .defaultSize(width: 820, height: 560)
+
+        Window("Chào mừng đến với MKey", id: "welcome") {
+            WelcomePage()
+                .environmentObject(state)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
+        .defaultSize(width: 480, height: 450)
     }
 }
 
@@ -45,6 +54,10 @@ struct MenuBarLabel: View {
                 openWindow(id: "settings")
                 NSApp.activate(ignoringOtherApps: true)
             }
+            .onReceive(NotificationCenter.default.publisher(for: .mkOpenWelcomeWindow)) { _ in
+                openWindow(id: "welcome")
+                NSApp.activate(ignoringOtherApps: true)
+            }
     }
 }
 
@@ -54,48 +67,67 @@ struct MenuContent: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Toggle("Tiếng Việt  \(AppState.hotkeyDescription(state.switchKeyStatus))", isOn: $state.isVietnamese)
-
-        Divider()
-
-        Picker("Kiểu gõ", selection: $state.inputType) {
-            ForEach(AppState.inputTypeNames.indices, id: \.self) { i in
-                Text(AppState.inputTypeNames[i]).tag(i)
+        if !state.accessibilityGranted {
+            Button("Cấp quyền Trợ năng…") {
+                openWelcomeWindow()
             }
-        }
-
-        Picker("Bảng mã", selection: $state.codeTable) {
-            ForEach(AppState.codeTableNames.indices, id: \.self) { i in
-                Text(AppState.codeTableNames[i]).tag(i)
+            Divider()
+            Button("Thoát MKey") {
+                NSApp.terminate(nil)
             }
-        }
+            .keyboardShortcut("q")
+        } else {
+            Toggle("Tiếng Việt", isOn: $state.isVietnamese)
+                .dynamicShortcut(state.switchKeyStatus)
 
-        Divider()
+            Divider()
 
-        Button("Chuyển mã nhanh  \(AppState.hotkeyDescription(state.convertHotKey))") {
-            MKBridge.engineRequestsQuickConvert()
-        }
-
-        Button("Công cụ chuyển mã…") { open(.convert) }
-        Button("Gõ tắt…") { open(.macro) }
-
-        if clipboard.enabled {
-            Button("Lịch sử Clipboard  \(AppState.hotkeyDescription(clipboard.hotKey))") {
-                ClipboardManager.shared.togglePicker()
+            Picker("Kiểu gõ", selection: $state.inputType) {
+                ForEach(AppState.inputTypeNames.indices, id: \.self) { i in
+                    Text(AppState.inputTypeNames[i]).tag(i)
+                }
             }
+
+            Picker("Bảng mã", selection: $state.codeTable) {
+                ForEach(AppState.codeTableNames.indices, id: \.self) { i in
+                    Text(AppState.codeTableNames[i]).tag(i)
+                }
+            }
+
+            Divider()
+
+            Button("Chuyển mã nhanh") {
+                MKBridge.engineRequestsQuickConvert()
+            }
+            .dynamicShortcut(state.convertHotKey)
+
+            Button("Công cụ chuyển mã…") { open(.convert) }
+            Button("Gõ tắt…") { open(.macro) }
+
+            if clipboard.enabled {
+                Button("Lịch sử Clipboard") {
+                    ClipboardManager.shared.togglePicker()
+                }
+                .dynamicShortcut(clipboard.hotKey)
+            }
+
+            Divider()
+
+            Button("Bảng điều khiển…") { open(.typing) }
+            Button("Giới thiệu MKey") { open(.about) }
+
+            Divider()
+
+            Button("Thoát MKey") {
+                NSApp.terminate(nil)
+            }
+            .keyboardShortcut("q")
         }
+    }
 
-        Divider()
-
-        Button("Bảng điều khiển…") { open(.typing) }
-        Button("Giới thiệu MKey") { open(.about) }
-
-        Divider()
-
-        Button("Thoát MKey") {
-            NSApp.terminate(nil)
-        }
-        .keyboardShortcut("q")
+    private func openWelcomeWindow() {
+        openWindow(id: "welcome")
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func open(_ page: SettingsPage) {
@@ -251,12 +283,25 @@ final class MkeyAppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Window
 
     private func openSettingsWindow() {
-        // The Window scene registers this identifier; reuse it from AppKit side.
-        if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "settings" }) {
-            window.makeKeyAndOrderFront(nil)
+        let state = AppState.shared
+        if state.accessibilityGranted {
+            if let welcomeWindow = NSApp.windows.first(where: { $0.identifier?.rawValue == "welcome" }) {
+                welcomeWindow.close()
+            }
+            if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "settings" }) {
+                window.makeKeyAndOrderFront(nil)
+            } else {
+                NotificationCenter.default.post(name: .mkOpenSettingsWindow, object: nil)
+            }
         } else {
-            // routed to MenuBarLabel, which holds an openWindow environment action
-            NotificationCenter.default.post(name: .mkOpenSettingsWindow, object: nil)
+            if let settingsWindow = NSApp.windows.first(where: { $0.identifier?.rawValue == "settings" }) {
+                settingsWindow.close()
+            }
+            if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "welcome" }) {
+                window.makeKeyAndOrderFront(nil)
+            } else {
+                NotificationCenter.default.post(name: .mkOpenWelcomeWindow, object: nil)
+            }
         }
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -264,5 +309,45 @@ final class MkeyAppDelegate: NSObject, NSApplicationDelegate {
 
 extension Notification.Name {
     static let mkOpenSettingsWindow = Notification.Name("MKOpenSettingsWindow")
+    static let mkOpenWelcomeWindow = Notification.Name("MKOpenWelcomeWindow")
     static let mkRequestAccessibility = Notification.Name("MKRequestAccessibility")
+}
+
+extension View {
+    @ViewBuilder
+    func dynamicShortcut(_ status: Int32) -> some View {
+        if let shortcut = ShortcutParser.parse(status) {
+            self.keyboardShortcut(shortcut.key, modifiers: shortcut.modifiers)
+        } else {
+            self
+        }
+    }
+}
+
+private struct ShortcutParser {
+    static func parse(_ status: Int32) -> (key: KeyEquivalent, modifiers: EventModifiers)? {
+        let value = UInt32(bitPattern: status)
+        let char = UInt8((value >> 24) & 0xFF)
+        guard char != 0xFE && char != 0 else { return nil }
+        
+        let key: KeyEquivalent
+        if char == 49 || char == 32 {
+            key = .space
+        } else {
+            let letter = String(UnicodeScalar(char)).lowercased()
+            if let c = letter.first {
+                key = KeyEquivalent(c)
+            } else {
+                key = KeyEquivalent(" ")
+            }
+        }
+        
+        var modifiers: EventModifiers = []
+        if value & 0x100 != 0 { _ = modifiers.insert(.control) }
+        if value & 0x200 != 0 { _ = modifiers.insert(.option) }
+        if value & 0x400 != 0 { _ = modifiers.insert(.command) }
+        if value & 0x800 != 0 { _ = modifiers.insert(.shift) }
+        
+        return (key, modifiers)
+    }
 }

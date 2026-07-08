@@ -120,7 +120,7 @@ struct MacroPage: View {
                     Text("Danh sách gõ tắt")
                 }
             }
-            .formStyle(.grouped)
+            .settingsFormStyle()
         }
         .onAppear {
             reload()

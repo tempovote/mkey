@@ -71,6 +71,36 @@ extern "C" {
     bool _frontMostIsUnicodeCompound = false;
     bool _frontMostNeedsChromiumFix = false;
 
+    // Performance Caches
+    CGKeyCode _compatKeyCodeCache[128];
+    NSMutableDictionary<NSNumber*, NSString*>* _pidBundleIdCache = nil;
+
+    NSString* MKGetBundleIdentifierForPid(pid_t pid) {
+        if (pid <= 0) return nil;
+        if (_pidBundleIdCache == nil) {
+            _pidBundleIdCache = [[NSMutableDictionary alloc] init];
+        }
+        NSNumber* key = @(pid);
+        NSString* cached = _pidBundleIdCache[key];
+        if (cached != nil) {
+            return [cached isEqualToString:@"__nil__"] ? nil : cached;
+        }
+        NSRunningApplication* app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+        NSString* bid = app.bundleIdentifier;
+        if (bid == nil) {
+            bid = app.localizedName;
+        }
+        if (bid != nil) {
+            _pidBundleIdCache[key] = bid;
+        } else {
+            _pidBundleIdCache[key] = @"__nil__";
+        }
+        if (_pidBundleIdCache.count > 100) {
+            [_pidBundleIdCache removeAllObjects];
+        }
+        return bid;
+    }
+
     void MKUpdateInputSourceCache() {
         TISInputSourceRef isource = TISCopyCurrentKeyboardInputSource();
         if (isource != NULL) {
@@ -83,6 +113,9 @@ extern "C" {
                 }
             }
             CFRelease(isource);
+        }
+        for (int i = 0; i < 128; i++) {
+            _compatKeyCodeCache[i] = 0xFFFF;
         }
     }
 
@@ -135,7 +168,7 @@ extern "C" {
             if (pid == _frontMostPid && _frontMostApp != nil) {
                 bid = _frontMostApp;
             } else {
-                bid = [NSRunningApplication runningApplicationWithProcessIdentifier:pid].bundleIdentifier;
+                bid = MKGetBundleIdentifierForPid(pid);
             }
 
             // Resolve the owning process's executable path. On macOS 26/27 the
@@ -480,12 +513,9 @@ extern "C" {
         pid_t pid = (pid_t)CGEventGetIntegerValueField(event, kCGEventTargetUnixProcessID);
         if (pid <= 0 || pid == _frontMostPid)
             return;
-        NSRunningApplication* app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
-        NSString* bundleIdentifier = app.bundleIdentifier;
+        NSString* bundleIdentifier = MKGetBundleIdentifierForPid(pid);
         if (bundleIdentifier == nil || [bundleIdentifier compare:[[NSBundle mainBundle] bundleIdentifier]] != 0) {
-            _frontMostApp = bundleIdentifier;
-            if (_frontMostApp == nil)
-                _frontMostApp = app.localizedName != nil ? app.localizedName : @"UnknownApp";
+            _frontMostApp = bundleIdentifier ? bundleIdentifier : @"UnknownApp";
             _frontMostPid = pid;
             updateFrontMostAppFlags();
         }
@@ -940,10 +970,16 @@ extern "C" {
                 AXInvalidateFocusCache();
             }
         }
-
         if (type == kCGEventKeyDown && vPerformLayoutCompat) {
-            // If conversion fail, use current keycode
-            _keycode = ConvertEventToKeyboadLayoutCompatKeyCode(event, _keycode);
+            CGKeyCode originalKeyCode = _keycode;
+            if (originalKeyCode < 128) {
+                if (_compatKeyCodeCache[originalKeyCode] == 0xFFFF) {
+                    _compatKeyCodeCache[originalKeyCode] = ConvertEventToKeyboadLayoutCompatKeyCode(event, originalKeyCode);
+                }
+                _keycode = _compatKeyCodeCache[originalKeyCode];
+            } else {
+                _keycode = ConvertEventToKeyboadLayoutCompatKeyCode(event, _keycode);
+            }
         }
 
         //switch language shortcut; convert hotkey

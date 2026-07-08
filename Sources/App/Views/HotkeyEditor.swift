@@ -7,53 +7,270 @@
 //
 
 import SwiftUI
+import AppKit
 
 struct HotkeyEditor: View {
     @Binding var status: Int32
+    @State private var isRecording = false
+    @State private var activeModifiers: Int32 = 0
 
-    private func modifierBinding(_ mask: Int32) -> Binding<Bool> {
-        Binding {
-            status & mask != 0
-        } set: { on in
-            if on { status |= mask } else { status &= ~mask }
-        }
+    private var hasHotkey: Bool {
+        let value = UInt32(bitPattern: status)
+        return (value & ~0x8000) != 0xFE0000FE
     }
 
-    private var keyCode: Binding<UInt8> {
-        Binding {
-            UInt8(truncatingIfNeeded: status)
-        } set: { code in
-            status = (status & ~0xFF) | Int32(code)
+    private var hotkeyParts: [String] {
+        let value = UInt32(bitPattern: status)
+        var parts: [String] = []
+        if value & 0x100 != 0 { parts.append("⌃") }
+        if value & 0x200 != 0 { parts.append("⌥") }
+        if value & 0x400 != 0 { parts.append("⌘") }
+        if value & 0x800 != 0 { parts.append("⇧") }
+        let char = UInt8((value >> 24) & 0xFF)
+        if char != 0xFE {
+            if char == 49 || Character(UnicodeScalar(char)) == " " {
+                parts.append("Space")
+            } else {
+                parts.append(String(UnicodeScalar(char)).uppercased())
+            }
         }
+        return parts
     }
 
-    private var displayChar: Binding<UInt8> {
-        Binding {
-            UInt8(truncatingIfNeeded: status >> 24)
-        } set: { char in
-            status = (status & 0x00FF_FFFF) | (Int32(char) << 24)
-        }
+    private var activeModifiersParts: [String] {
+        var parts: [String] = []
+        if activeModifiers & 0x100 != 0 { parts.append("⌃") }
+        if activeModifiers & 0x200 != 0 { parts.append("⌥") }
+        if activeModifiers & 0x400 != 0 { parts.append("⌘") }
+        if activeModifiers & 0x800 != 0 { parts.append("⇧") }
+        return parts
     }
 
     var body: some View {
         LabeledContent("Tổ hợp phím") {
-            HStack(spacing: 6) {
-                Toggle("⌃", isOn: modifierBinding(0x100)).help("Control")
-                Toggle("⌥", isOn: modifierBinding(0x200)).help("Option")
-                Toggle("⌘", isOn: modifierBinding(0x400)).help("Command")
-                Toggle("⇧", isOn: modifierBinding(0x800)).help("Shift")
-                KeyRecorderField(keyCode: keyCode, displayChar: displayChar)
-
-                Text(AppState.hotkeyDescription(status))
-                    .font(.callout.weight(.semibold).monospaced())
-                    .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Button {
+                    activeModifiers = 0
+                    isRecording = true
+                } label: {
+                    HStack(spacing: 6) {
+                        if isRecording {
+                            let parts = activeModifiersParts
+                            if parts.isEmpty {
+                                Text("Nhấn tổ hợp phím...")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                ForEach(parts, id: \.self) { part in
+                                    KeycapView(text: part)
+                                }
+                                Text("...")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else {
+                            let parts = hotkeyParts
+                            if parts.isEmpty {
+                                Text("Chưa đặt")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                ForEach(parts, id: \.self) { part in
+                                    KeycapView(text: part)
+                                }
+                            }
+                        }
+                    }
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 3)
-                    .background(.quaternary.opacity(0.6), in: Capsule())
-                    .padding(.leading, 4)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: 32)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(isRecording ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor).opacity(0.35))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(isRecording ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: isRecording ? 1.5 : 0.8)
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .background(
+                    HotkeyRecorderRepresentable(
+                        isRecording: $isRecording,
+                        status: $status,
+                        activeModifiers: $activeModifiers
+                    )
+                    .allowsHitTesting(false)
+                )
+
+                if !isRecording && hasHotkey {
+                    Button {
+                        let beep = status & 0x8000
+                        status = beep | Int32(bitPattern: 0xFE0000FE)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                            .imageScale(.small)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Xóa phím tắt")
+                    .transition(.opacity.combined(with: .scale))
+                }
             }
-            .toggleStyle(.button)
-            .buttonStyle(.bordered)
+            .animation(.easeOut(duration: 0.12), value: isRecording)
+        }
+    }
+}
+
+struct KeycapView: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold, design: .rounded))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(Color(nsColor: .controlColor))
+                    .shadow(color: .black.opacity(0.12), radius: 1, x: 0, y: 1)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+            )
+            .foregroundColor(.primary)
+    }
+}
+
+private struct HotkeyRecorderRepresentable: NSViewRepresentable {
+    @Binding var isRecording: Bool
+    @Binding var status: Int32
+    @Binding var activeModifiers: Int32
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.isRecording = isRecording
+        context.coordinator.startOrStopMonitor()
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    final class Coordinator {
+        var parent: HotkeyRecorderRepresentable
+        var isRecording = false
+        private var monitor: Any?
+
+        init(parent: HotkeyRecorderRepresentable) {
+            self.parent = parent
+        }
+
+        func startOrStopMonitor() {
+            if isRecording, monitor == nil {
+                Task { @MainActor in
+                    MKBridge.setEngineSuspended(true)
+                    ClipboardManager.shared.suspendHotKey()
+                }
+
+                monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged, .leftMouseDown]) { [weak self] event in
+                    guard let self, self.isRecording else { return event }
+
+                    if event.type == .leftMouseDown {
+                        Task { @MainActor in
+                            self.parent.isRecording = false
+                        }
+                        return event
+                    } else if event.type == .flagsChanged {
+                        let flags = event.modifierFlags
+                        var mods: Int32 = 0
+                        if flags.contains(.control) { mods |= 0x100 }
+                        if flags.contains(.option) { mods |= 0x200 }
+                        if flags.contains(.command) { mods |= 0x400 }
+                        if flags.contains(.shift) { mods |= 0x800 }
+
+                        Task { @MainActor in
+                            self.parent.activeModifiers = mods
+                        }
+                        return event
+                    } else if event.type == .keyDown {
+                        let code = event.keyCode
+
+                        // Escape cancels
+                        if code == 53 {
+                            Task { @MainActor in
+                                self.parent.isRecording = false
+                            }
+                            return nil
+                        }
+
+                        // Delete/Backspace clears
+                        if code == 51 || code == 117 {
+                            Task { @MainActor in
+                                let beep = self.parent.status & 0x8000
+                                self.parent.status = beep | Int32(bitPattern: 0xFE0000FE)
+                                self.parent.isRecording = false
+                            }
+                            return nil
+                        }
+
+                        // Return/Enter confirms modifier-only shortcut
+                        if code == 36 || code == 76 {
+                            if self.parent.activeModifiers != 0 {
+                                Task { @MainActor in
+                                    let beep = self.parent.status & 0x8000
+                                    self.parent.status = beep | self.parent.activeModifiers | Int32(bitPattern: 0xFE0000FE)
+                                    self.parent.isRecording = false
+                                }
+                                return nil
+                            }
+                        }
+
+                        // Character keys
+                        var displayChar: UInt8 = 0xFE
+                        if code == 49 {
+                            displayChar = 32
+                        } else if let chars = event.characters, let first = chars.utf8.first, code < 0xFE {
+                            displayChar = first
+                        } else {
+                            return event
+                        }
+
+                        let finalModifiers = self.parent.activeModifiers
+                        let finalKeyCode = UInt8(truncatingIfNeeded: code)
+
+                        Task { @MainActor in
+                            let beep = self.parent.status & 0x8000
+                            self.parent.status = beep | finalModifiers | Int32(finalKeyCode) | (Int32(displayChar) << 24)
+                            self.parent.isRecording = false
+                        }
+                        return nil
+                    }
+                    return event
+                }
+            } else if !isRecording, let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+                Task { @MainActor in
+                    MKBridge.setEngineSuspended(false)
+                    ClipboardManager.shared.resumeHotKey()
+                }
+            }
+        }
+
+        deinit {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                Task { @MainActor in
+                    MKBridge.setEngineSuspended(false)
+                    ClipboardManager.shared.resumeHotKey()
+                }
+            }
         }
     }
 }

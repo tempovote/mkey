@@ -90,6 +90,6 @@ struct ClipboardPage: View {
                 }
             }
         }
-        .formStyle(.grouped)
+        .settingsFormStyle()
     }
 }

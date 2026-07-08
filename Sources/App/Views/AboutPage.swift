@@ -27,18 +27,17 @@ struct AboutPage: View {
                     }
 
                     Text("MKey")
-                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .font(.system(size: 32, weight: .semibold, design: .rounded))
                         .padding(.top, 12)
 
                     Text("Bộ gõ Tiếng Việt hiện đại cho macOS")
-                        .font(.headline)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                         .padding(.top, 2)
 
                     HStack(spacing: 8) {
                         InfoPill(text: "Phiên bản \(versionShort)")
                         InfoPill(text: "Build \(versionBuild)")
-                        InfoPill(text: "macOS 26")
                     }
                     .padding(.top, 10)
 
@@ -71,7 +70,8 @@ struct AboutPage: View {
                     Spacer(minLength: 16)
 
                     Text("Phát triển bởi **Anh Tuấn** · © 2026")
-                        .font(.callout)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
 
                     VStack(spacing: 5) {
                         Text("Sử dụng engine gõ tiếng Việt từ dự án mã nguồn mở OpenKey (© Tuyen Mai)")
@@ -102,7 +102,7 @@ private struct InfoPill: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
-            .background(.quaternary.opacity(0.45), in: Capsule())
+            .background(.quaternary.opacity(0.38), in: RoundedRectangle(cornerRadius: AppStyle.controlCornerRadius))
     }
 }
 
@@ -117,13 +117,13 @@ private struct InfoRow: View {
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(Color.accentColor)
                 .frame(width: 32, height: 32)
-                .background(.quaternary.opacity(0.42), in: RoundedRectangle(cornerRadius: 7))
+                .background(.quaternary.opacity(0.36), in: RoundedRectangle(cornerRadius: AppStyle.controlCornerRadius))
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.callout.weight(.semibold))
                 Text(caption)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -133,10 +133,10 @@ private struct InfoRow: View {
         .padding(.vertical, 10)
         .padding(.horizontal, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.24), in: RoundedRectangle(cornerRadius: 8))
+        .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: AppStyle.cardCornerRadius))
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(.quaternary.opacity(0.45), lineWidth: 1)
+            RoundedRectangle(cornerRadius: AppStyle.cardCornerRadius)
+                .stroke(.quaternary.opacity(0.38), lineWidth: 1)
         )
     }
 }

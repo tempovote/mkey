@@ -40,21 +40,6 @@ private final class KeyablePanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// Behind-window blur so the picker is genuinely translucent (samples the
-/// desktop / windows underneath), unlike SwiftUI's in-app Material.
-private struct VisualEffectBlur: NSViewRepresentable {
-    var material: NSVisualEffectView.Material = .popover
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = material
-        view.blendingMode = .behindWindow
-        view.state = .active
-        return view
-    }
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
-        nsView.material = material
-    }
-}
 
 /// Display + selection state shared between the controller's key monitor and
 /// the SwiftUI list.
@@ -143,6 +128,11 @@ final class ClipboardPicker {
                 if self.model.selection >= self.model.filtered.count {
                     self.model.selection = max(0, self.model.filtered.count - 1)
                 }
+            },
+            onStrip: { [weak self] item in
+                guard let self else { return }
+                self.manager?.stripFormatting(of: item)
+                self.model.items = self.manager?.items ?? []
             },
             onClear: { [weak self] in
                 self?.manager?.clear()
@@ -269,9 +259,7 @@ final class ClipboardPicker {
         }
         panel?.orderOut(nil)
         panel = nil
-        // we activated MKey to show the panel; hand focus back so the user
-        // returns to whatever they were doing (unless a paste will do it)
-        if wasOpen, !pasting { previousApp?.activate() }
+        if wasOpen, !pasting { previousApp?.activate(options: .activateIgnoringOtherApps) }
     }
 
     private func pick(_ item: ClipItem) {
@@ -328,6 +316,7 @@ private struct ClipboardPickerView: View {
     let imageURL: (ClipItem) -> URL?
     let onPick: (ClipItem) -> Void
     let onRemove: (ClipItem) -> Void
+    let onStrip: (ClipItem) -> Void
     let onClear: () -> Void
     let onPinOnTopToggle: (Bool) -> Void
     let onAutoHideToggle: (Bool) -> Void
@@ -459,7 +448,8 @@ private struct ClipboardPickerView: View {
                                       isSelected: index == model.selection,
                                       imageURL: imageURL,
                                       onPick: { onPick(item) },
-                                      onRemove: { onRemove(item) })
+                                      onRemove: { onRemove(item) },
+                                      onStrip: { onStrip(item) })
                                 .id(item.id) // stable identity so filtering shows correct rows
                         }
                     }
@@ -510,6 +500,7 @@ private struct PickerRow: View {
     let imageURL: (ClipItem) -> URL?
     let onPick: () -> Void
     let onRemove: () -> Void
+    let onStrip: () -> Void
     @State private var hovering = false
 
     private var subtitle: String {
@@ -524,13 +515,155 @@ private struct PickerRow: View {
                 .foregroundStyle(isSelected ? .white.opacity(0.85) : .secondary)
                 .frame(width: 18, alignment: .trailing)
 
-            if item.isImage, let url = imageURL(item), let nsImage = ClipThumbnail.image(for: url) {
+            if let filePaths = item.filePaths, filePaths.count > 1 {
+                ZStack {
+                    // Bottom card (Layer 3) - offset up-right
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(
+                            isSelected
+                            ? Color.white.opacity(0.12)
+                            : Color(nsColor: .quaternaryLabelColor).opacity(0.35)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(
+                                    isSelected
+                                    ? Color.white.opacity(0.25)
+                                    : Color.secondary.opacity(0.15),
+                                    lineWidth: 0.5
+                                )
+                        )
+                        .frame(width: 48, height: 34)
+                        .offset(x: 2, y: -2)
+
+                    // Middle card (Layer 2) - centered
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(
+                            isSelected
+                            ? Color.white.opacity(0.16)
+                            : Color(nsColor: .quaternaryLabelColor).opacity(0.45)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(
+                                    isSelected
+                                    ? Color.white.opacity(0.3)
+                                    : Color.secondary.opacity(0.2),
+                                    lineWidth: 0.5
+                                )
+                        )
+                        .frame(width: 48, height: 34)
+                        .offset(x: 0, y: 0)
+
+                    // Top card (Layer 1 - Main) - offset down-left
+                    ZStack {
+                        if let url = imageURL(item), let nsImage = ClipThumbnail.image(for: url) {
+                            Image(nsImage: nsImage)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 48, height: 34)
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                        } else {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(
+                                    isSelected
+                                    ? Color.white.opacity(0.2)
+                                    : Color(nsColor: .quaternaryLabelColor).opacity(0.5)
+                                )
+                            Image(systemName: "doc.on.doc.fill")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundStyle(isSelected ? Color.white.opacity(0.9) : Color.secondary)
+                        }
+                    }
+                    .frame(width: 48, height: 34)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(
+                                isSelected
+                                ? Color.white.opacity(0.4)
+                                : Color.secondary.opacity(0.25),
+                                lineWidth: 0.5
+                            )
+                    )
+                    .offset(x: -2, y: 2)
+
+                    // File count badge in the bottom-right corner of the stack container
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Spacer()
+                            Text("\(filePaths.count)")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(Color.white)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(
+                                    Capsule()
+                                        .fill(
+                                            isSelected
+                                            ? Color.orange
+                                            : Color.black.opacity(0.75)
+                                        )
+                                )
+                                .overlay(
+                                    Capsule()
+                                        .stroke(Color.white.opacity(0.3), lineWidth: 0.5)
+                                )
+                        }
+                    }
+                    .padding(.trailing, 2)
+                    .padding(.bottom, 2)
+                }
+                .frame(width: 52, height: 38)
+            } else if let url = imageURL(item), let nsImage = ClipThumbnail.image(for: url) {
                 Image(nsImage: nsImage)
                     .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 52, height: 38, alignment: .leading)
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 52, height: 38)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
                     .overlay(RoundedRectangle(cornerRadius: 4).stroke(.quaternary))
+            } else {
+                ZStack {
+                    if item.htmlText != nil {
+                        // Soft, elegant lavender/blue glassmorphic card for rich text
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(
+                                isSelected 
+                                ? LinearGradient(colors: [Color.white.opacity(0.12), Color.white.opacity(0.06)], startPoint: .top, endPoint: .bottom)
+                                : LinearGradient(colors: [Color.blue.opacity(0.06), Color.purple.opacity(0.04)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                            )
+                        
+                        Image(systemName: "doc.richtext")
+                            .font(.system(size: 19, weight: .medium))
+                            .foregroundStyle(
+                                isSelected 
+                                ? LinearGradient(colors: [.white, .white.opacity(0.85)], startPoint: .top, endPoint: .bottom)
+                                : LinearGradient(colors: [.blue, .indigo], startPoint: .topLeading, endPoint: .bottomTrailing)
+                            )
+                    } else {
+                        // Minimalist, neutral gray card for plain text
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(
+                                isSelected
+                                ? Color.white.opacity(0.08)
+                                : Color(nsColor: .quaternaryLabelColor).opacity(0.3)
+                            )
+                        
+                        Image(systemName: "doc.text")
+                            .font(.system(size: 19, weight: .medium))
+                            .foregroundStyle(isSelected ? Color.white.opacity(0.85) : Color.secondary)
+                    }
+                }
+                .frame(width: 52, height: 38)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(
+                            isSelected
+                            ? Color.white.opacity(0.25)
+                            : (item.htmlText != nil ? Color.blue.opacity(0.2) : Color.secondary.opacity(0.15)),
+                            lineWidth: 0.5
+                        )
+                )
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -546,12 +679,24 @@ private struct PickerRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if hovering {
-                Button(action: onRemove) {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(isSelected ? .white.opacity(0.9) : .secondary)
+                HStack(spacing: 8) {
+                    if item.htmlText != nil {
+                        Button(action: onStrip) {
+                            Image(systemName: "eraser")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(isSelected ? Color.white.opacity(0.9) : Color.orange)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Bỏ định dạng Rich Text & Markdown")
+                    }
+
+                    Button(action: onRemove) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(isSelected ? .white.opacity(0.9) : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Xoá mục này khỏi lịch sử")
                 }
-                .buttonStyle(.plain)
-                .help("Xoá mục này")
             }
         }
         .padding(.horizontal, 10)

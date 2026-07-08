@@ -34,7 +34,7 @@ enum StatusIcon {
             let textSize = text.size(withAttributes: [.font: font])
             // optically centre the cap glyph within the frame
             let x = frameRect.midX - textSize.width / 2
-            let y = frameRect.midY - font.capHeight / 2 + font.descender
+            let y = frameRect.midY - textSize.height / 2
 
             if gray {
                 // In template mode, draw text using destinationOut (transparent cutout) so it is visible against the background fill
