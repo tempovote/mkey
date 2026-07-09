@@ -87,6 +87,10 @@ struct ClipboardPage: View {
                         }
                         .disabled(manager.items.isEmpty)
                     }
+                } footer: {
+                    Text("Mục đã ghim (biểu tượng 📌 trong bảng lịch sử, phím tắt ⌘P) luôn nằm trên cùng, không bị trôi khi vượt số mục tối đa và được giữ lại khi xoá lịch sử. Di chuột lên mục hình ảnh để xem trước phóng to.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
             }
         }

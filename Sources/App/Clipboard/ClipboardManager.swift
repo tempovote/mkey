@@ -24,14 +24,15 @@ struct ClipItem: Identifiable, Codable, Equatable {
     let filePaths: [String]? // original file paths of copied files
     let date: Date           // when it was captured
     let sourceApp: String?   // app that owned the clipboard at capture time
+    var pinned: Bool         // pinned items stay at the top and survive trims/clear
 
     init(text: String, htmlText: String? = nil, source: String?) {
-        id = UUID(); isImage = false; self.text = text; self.htmlText = htmlText; imageFile = nil; filePath = nil; filePaths = nil; date = Date(); sourceApp = source
+        id = UUID(); isImage = false; self.text = text; self.htmlText = htmlText; imageFile = nil; filePath = nil; filePaths = nil; date = Date(); sourceApp = source; pinned = false
     }
     init(imageFile: String, label: String, filePath: String? = nil, source: String?) {
-        id = UUID(); isImage = true; text = label; self.imageFile = imageFile; self.filePath = filePath; filePaths = nil; date = Date(); sourceApp = source; htmlText = nil
+        id = UUID(); isImage = true; text = label; self.imageFile = imageFile; self.filePath = filePath; filePaths = nil; date = Date(); sourceApp = source; htmlText = nil; pinned = false
     }
-    init(id: UUID, isImage: Bool, text: String, htmlText: String?, imageFile: String?, filePath: String?, filePaths: [String]?, date: Date, sourceApp: String?) {
+    init(id: UUID, isImage: Bool, text: String, htmlText: String?, imageFile: String?, filePath: String?, filePaths: [String]?, date: Date, sourceApp: String?, pinned: Bool = false) {
         self.id = id
         self.isImage = isImage
         self.text = text
@@ -41,11 +42,12 @@ struct ClipItem: Identifiable, Codable, Equatable {
         self.filePaths = filePaths
         self.date = date
         self.sourceApp = sourceApp
+        self.pinned = pinned
     }
 
     // Custom decode keeps backward compatibility with items saved before
-    // date/sourceApp/filePath/htmlText/filePaths existed.
-    enum CodingKeys: String, CodingKey { case id, isImage, text, htmlText, imageFile, filePath, filePaths, date, sourceApp }
+    // date/sourceApp/filePath/htmlText/filePaths/pinned existed.
+    enum CodingKeys: String, CodingKey { case id, isImage, text, htmlText, imageFile, filePath, filePaths, date, sourceApp, pinned }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -57,6 +59,7 @@ struct ClipItem: Identifiable, Codable, Equatable {
         filePaths = try c.decodeIfPresent([String].self, forKey: .filePaths)
         date = try c.decodeIfPresent(Date.self, forKey: .date) ?? Date()
         sourceApp = try c.decodeIfPresent(String.self, forKey: .sourceApp)
+        pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
     }
 }
 
@@ -66,7 +69,21 @@ final class ClipboardManager: ObservableObject {
 
     // ⌃V default: keycode V (9), control bit (0x100), display char 'v' (0x76)
     static let defaultHotKey: Int32 = 0x7600_0109
-    private static let maxImageBytes = 12 * 1024 * 1024
+    private nonisolated static let maxImageBytes = 12 * 1024 * 1024
+
+    /// Folders where reading a file makes macOS show a "MKey would like to
+    /// access…" TCC prompt. Capture must never read file contents there —
+    /// with ad-hoc signing every rebuild resets TCC, so users would get
+    /// re-prompted forever.
+    nonisolated private static func isPromptProtectedPath(_ path: String) -> Bool {
+        let home = NSHomeDirectory()
+        for folder in ["Documents", "Desktop", "Downloads"] {
+            if path.hasPrefix("\(home)/\(folder)/") || path == "\(home)/\(folder)" { return true }
+        }
+        if path.contains("/Library/Mobile Documents") { return true } // iCloud Drive
+        if path.hasPrefix("/Volumes/") { return true }                // removable/network volumes
+        return false
+    }
 
     private let defaults = UserDefaults.standard
     private let itemsKey = "clipboardItems"
@@ -224,19 +241,34 @@ final class ClipboardManager: ObservableObject {
         if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL], !urls.isEmpty {
             let fileURL = urls[0]
             let changeCountAtStart = pasteboard.changeCount
+            // Screenshot tools put image data next to the file URL — grab it
+            // now (pasteboard isn't thread-safe) so the thumbnail can be built
+            // without ever touching the file on disk.
+            let pbImageData = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff)
+            let allowDiskRead = !ClipboardManager.isPromptProtectedPath(fileURL.path)
             Task.detached(priority: .background) {
                 var pngData: Data? = nil
-                
-                // 1. Try generating a high-fidelity QuickLook thumbnail first
-                if let qlImage = await ClipboardManager.shared.generateQuickLookThumbnail(for: fileURL, size: CGSize(width: 120, height: 120)) {
+
+                // 1. Image data already on the pasteboard: no disk access, no
+                //    TCC prompt. This covers screenshot-to-clipboard tools.
+                if let data = pbImageData, data.count <= ClipboardManager.maxImageBytes,
+                   let rep = NSBitmapImageRep(data: data) {
+                    pngData = rep.representation(using: .png, properties: [:])
+                }
+
+                // 2. High-fidelity QuickLook thumbnail — only where reading
+                //    won't trigger a folder-access permission prompt.
+                // 256@2x: big enough for the hover preview, still tiny on disk
+                if pngData == nil, allowDiskRead,
+                   let qlImage = await ClipboardManager.shared.generateQuickLookThumbnail(for: fileURL, size: CGSize(width: 256, height: 256)) {
                     if let tiff = qlImage.tiffRepresentation,
                        let rep = NSBitmapImageRep(data: tiff) {
                         pngData = rep.representation(using: .png, properties: [:])
                     }
                 }
-                
-                // 2. If QuickLook fails and it is a standard image, try reading the data directly
-                if pngData == nil {
+
+                // 3. If QuickLook fails and it is a standard image, try reading the data directly
+                if pngData == nil, allowDiskRead {
                     if let type = UTType(filenameExtension: fileURL.pathExtension), type.conforms(to: .image) {
                         if let data = try? Data(contentsOf: fileURL), data.count <= ClipboardManager.maxImageBytes {
                             if let rep = NSBitmapImageRep(data: data) {
@@ -247,8 +279,8 @@ final class ClipboardManager: ObservableObject {
                         }
                     }
                 }
-                
-                // 3. Fallback to system file/folder icon
+
+                // 4. Fallback to system file/folder icon (never reads contents)
                 if pngData == nil {
                     let icon = NSWorkspace.shared.icon(forFile: fileURL.path)
                     if let tiff = icon.tiffRepresentation,
@@ -256,7 +288,7 @@ final class ClipboardManager: ObservableObject {
                         pngData = rep.representation(using: .png, properties: [:])
                     }
                 }
-                
+
                 guard let png = pngData else { return }
                 
                 await MainActor.run {
@@ -324,9 +356,18 @@ final class ClipboardManager: ObservableObject {
 
     // MARK: Mutations
 
+    /// Canonical order: pinned block first, then unpinned by recency.
+    /// New/promoted items land right below the pinned block.
+    private static func firstUnpinnedIndex(in list: [ClipItem]) -> Int {
+        list.firstIndex(where: { !$0.pinned }) ?? list.count
+    }
+
     private func addText(_ text: String, htmlText: String?, source: String?) {
-        var next = items.filter { $0.isImage || $0.text != text } // dedupe identical text
-        next.insert(ClipItem(text: text, htmlText: htmlText, source: source), at: 0)
+        // identical content already pinned → keep the pin, don't duplicate
+        if items.contains(where: { $0.pinned && !$0.isImage && $0.text == text }) { return }
+        var next = items.filter { $0.pinned || $0.isImage || $0.text != text } // dedupe identical text
+        next.insert(ClipItem(text: text, htmlText: htmlText, source: source),
+                    at: ClipboardManager.firstUnpinnedIndex(in: next))
         applyTrimmed(next)
     }
 
@@ -342,7 +383,8 @@ final class ClipboardManager: ObservableObject {
             label = "Hình ảnh"
         }
         var next = items
-        next.insert(ClipItem(imageFile: filename, label: label, source: source), at: 0)
+        next.insert(ClipItem(imageFile: filename, label: label, source: source),
+                    at: ClipboardManager.firstUnpinnedIndex(in: next))
         applyTrimmed(next)
     }
 
@@ -377,10 +419,15 @@ final class ClipboardManager: ObservableObject {
             }
         }
 
+        // same file already pinned → keep the pin, don't duplicate
+        if items.contains(where: { $0.pinned && $0.filePath == originalURLs[0].path }) {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
         var next = items
         let paths = originalURLs.map { $0.path }
-        next = next.filter { $0.filePath != originalURLs[0].path }
-        
+        next = next.filter { $0.pinned || $0.filePath != originalURLs[0].path }
+
         let newItem = ClipItem(
             id: UUID(),
             isImage: false,
@@ -393,39 +440,59 @@ final class ClipboardManager: ObservableObject {
             sourceApp: source
         )
         
-        next.insert(newItem, at: 0)
+        next.insert(newItem, at: ClipboardManager.firstUnpinnedIndex(in: next))
         applyTrimmed(next)
     }
 
     /// Re-add an existing item to the top (after the user pastes it).
+    /// Pinned items don't move — that's the point of pinning.
     private func promote(_ item: ClipItem) {
+        guard !item.pinned else { return }
         var next = items.filter { $0.id != item.id }
-        next.insert(item, at: 0)
+        next.insert(item, at: ClipboardManager.firstUnpinnedIndex(in: next))
         items = next
         persistItems()
     }
 
+    /// Pin/unpin an item. Either way it moves to the boundary between the
+    /// pinned block and the rest: newest pin sits at the bottom of the pinned
+    /// block, a freshly unpinned item becomes the most recent history entry.
+    func togglePin(_ item: ClipItem) {
+        guard let idx = items.firstIndex(where: { $0.id == item.id }) else { return }
+        var next = items
+        var moved = next.remove(at: idx)
+        moved.pinned.toggle()
+        next.insert(moved, at: ClipboardManager.firstUnpinnedIndex(in: next))
+        items = next
+        persistItems()
+    }
+
+    /// Cap history at maxItems, but pinned items never count against the cap's
+    /// eviction — only the oldest *unpinned* entries get dropped.
     private func applyTrimmed(_ newItems: [ClipItem]) {
         var next = newItems
-        if next.count > maxItems {
-            let dropped = next.suffix(next.count - maxItems)
+        let pinnedCount = next.lazy.filter { $0.pinned }.count
+        let allowedUnpinned = max(0, maxItems - pinnedCount)
+        let unpinned = next.filter { !$0.pinned }
+        if unpinned.count > allowedUnpinned {
+            let dropped = unpinned.suffix(unpinned.count - allowedUnpinned)
             deleteImageFiles(of: dropped)
-            next = Array(next.prefix(maxItems))
+            let droppedIDs = Set(dropped.map(\.id))
+            next.removeAll { droppedIDs.contains($0.id) }
         }
         items = next
         persistItems()
     }
 
     private func trim() {
-        guard items.count > maxItems else { return }
-        deleteImageFiles(of: items.suffix(items.count - maxItems))
-        items = Array(items.prefix(maxItems))
-        persistItems()
+        applyTrimmed(items)
     }
 
+    /// Clears history but keeps pinned items — pinning exists precisely so
+    /// content survives bulk cleanup.
     func clear() {
-        deleteImageFiles(of: items)
-        items = []
+        deleteImageFiles(of: items.filter { !$0.pinned })
+        items = items.filter { $0.pinned }
         persistItems()
     }
 
@@ -463,7 +530,8 @@ final class ClipboardManager: ObservableObject {
             filePath: oldItem.filePath,
             filePaths: oldItem.filePaths,
             date: oldItem.date,
-            sourceApp: oldItem.sourceApp
+            sourceApp: oldItem.sourceApp,
+            pinned: oldItem.pinned
         )
         items[idx] = stripped
         persistItems()
@@ -648,11 +716,17 @@ final class ClipboardManager: ObservableObject {
         guard let data = defaults.data(forKey: itemsKey),
               let decoded = try? JSONDecoder().decode([ClipItem].self, from: data) else { return }
         // keep only items whose backing image file still exists
-        items = decoded.prefix(maxItems).filter { item in
+        let valid = decoded.filter { item in
             guard item.isImage else { return true }
             guard let url = imageURL(for: item) else { return false }
             return FileManager.default.fileExists(atPath: url.path)
         }
+        // normalize order (pinned block first) and re-apply the cap without
+        // ever dropping pinned items
+        let pinned = valid.filter { $0.pinned }
+        let unpinned = valid.filter { !$0.pinned }
+        let allowedUnpinned = max(0, maxItems - pinned.count)
+        items = pinned + Array(unpinned.prefix(allowedUnpinned))
     }
 
     private func persistItems() {

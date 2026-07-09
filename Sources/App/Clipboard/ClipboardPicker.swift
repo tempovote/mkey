@@ -12,6 +12,7 @@
 import AppKit
 import ImageIO
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Loads small, cached thumbnails for clipboard images so the picker never
 /// decodes full-resolution bitmaps into memory just to draw a 52×38 cell.
@@ -19,7 +20,7 @@ enum ClipThumbnail {
     private static let cache = NSCache<NSString, NSImage>()
 
     static func image(for url: URL, maxPixel: CGFloat = 120) -> NSImage? {
-        let key = url.path as NSString
+        let key = "\(url.path)|\(Int(maxPixel))" as NSString
         if let cached = cache.object(forKey: key) { return cached }
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         let opts: [CFString: Any] = [
@@ -50,6 +51,10 @@ final class ClipboardPickerModel: ObservableObject {
     @Published var selection: Int = 0
     @Published var pinOnTop: Bool = true
     @Published var autoHide: Bool = true
+    // hover preview state (rendered as an in-panel overlay; a separate
+    // child NSPanel refused to show on macOS 27 for a non-activating app)
+    @Published var previewImage: NSImage?
+    @Published var previewCaption: String = ""
 
     /// Items after applying the search query (selection indexes into this).
     /// Case- and diacritic-insensitive so "khong" finds "không".
@@ -116,6 +121,8 @@ final class ClipboardPicker {
         model.selection = 0
         model.pinOnTop = manager.pinOnTop
         model.autoHide = manager.autoHide
+        model.previewImage = nil
+        model.previewCaption = ""
 
         let root = ClipboardPickerView(
             model: model,
@@ -134,9 +141,14 @@ final class ClipboardPicker {
                 self.manager?.stripFormatting(of: item)
                 self.model.items = self.manager?.items ?? []
             },
+            onTogglePin: { [weak self] item in
+                guard let self else { return }
+                self.manager?.togglePin(item)
+                self.model.items = self.manager?.items ?? []
+            },
             onClear: { [weak self] in
                 self?.manager?.clear()
-                self?.model.items = []
+                self?.model.items = self?.manager?.items ?? []
             },
             onPinOnTopToggle: { [weak self] pin in
                 guard let self else { return }
@@ -146,6 +158,8 @@ final class ClipboardPicker {
                 guard let self else { return }
                 self.manager?.autoHide = autoHide
             },
+            onPreview: { [weak self] item in self?.showPreview(for: item) },
+            onPreviewEnd: { [weak self] in self?.hidePreview() },
             onClose: { [weak self] in self?.close() })
         let hosting = NSHostingController(rootView: root)
 
@@ -243,7 +257,41 @@ final class ClipboardPicker {
         }
     }
 
+    // MARK: Hover image preview (Maccy-style)
+
+    /// Source for the large preview. Always the PNG stored in the app's own
+    /// Application Support dir — NEVER the original file: reading files in
+    /// Documents/Desktop/Downloads triggers a TCC permission prompt, which
+    /// fights the non-activating key panel and hangs the app.
+    static func previewImageURL(for item: ClipItem, manager: ClipboardManager?) -> URL? {
+        guard item.imageFile != nil else { return nil }
+        if !item.isImage {
+            // copied files: only preview actual images (extension check is a
+            // pure string operation, no disk access)
+            guard let path = item.filePath,
+                  let type = UTType(filenameExtension: (path as NSString).pathExtension),
+                  type.conforms(to: .image) else { return nil }
+        }
+        return manager?.imageURL(for: item)
+    }
+
+    /// Shows a large preview of an image item as an overlay inside the picker
+    /// panel. The overlay doesn't hit-test, so hover/clicks/keys are unaffected.
+    func showPreview(for item: ClipItem) {
+        guard isOpen,
+              let url = ClipboardPicker.previewImageURL(for: item, manager: manager),
+              let image = ClipThumbnail.image(for: url, maxPixel: 512) else { return }
+        model.previewImage = image
+        model.previewCaption = item.text
+    }
+
+    func hidePreview() {
+        model.previewImage = nil
+        model.previewCaption = ""
+    }
+
     func close() {
+        hidePreview()
         MKBridge.setEngineSuspended(false)
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
         if let resizeObserver { NotificationCenter.default.removeObserver(resizeObserver); self.resizeObserver = nil }
@@ -277,6 +325,13 @@ final class ClipboardPicker {
             guard let self, self.isOpen else { return event }
             let list = self.model.filtered
             let count = list.count
+            if event.keyCode == 35, event.modifierFlags.contains(.command) { // ⌘P: pin/unpin
+                if list.indices.contains(self.model.selection) {
+                    self.manager?.togglePin(list[self.model.selection])
+                    self.model.items = self.manager?.items ?? []
+                }
+                return nil
+            }
             switch event.keyCode {
             case 125: // down
                 if count > 0 { self.model.selection = min(count - 1, self.model.selection + 1) }
@@ -317,9 +372,12 @@ private struct ClipboardPickerView: View {
     let onPick: (ClipItem) -> Void
     let onRemove: (ClipItem) -> Void
     let onStrip: (ClipItem) -> Void
+    let onTogglePin: (ClipItem) -> Void
     let onClear: () -> Void
     let onPinOnTopToggle: (Bool) -> Void
     let onAutoHideToggle: (Bool) -> Void
+    let onPreview: (ClipItem) -> Void
+    let onPreviewEnd: () -> Void
     let onClose: () -> Void
     @FocusState private var searchFocused: Bool
 
@@ -371,7 +429,7 @@ private struct ClipboardPickerView: View {
                             .font(.caption)
                     }
                     .buttonStyle(.borderless)
-                    .help("Xoá toàn bộ lịch sử")
+                    .help("Xoá toàn bộ lịch sử (giữ lại các mục đã ghim)")
                 }
 
                 Button {
@@ -412,6 +470,7 @@ private struct ClipboardPickerView: View {
             HStack(spacing: 14) {
                 hint("↑↓", "Chọn")
                 hint("⇥", "Dán")
+                hint("⌘P", "Ghim")
                 if model.query.isEmpty { hint("1–9", "Chọn nhanh") }
                 hint("esc", "Đóng")
             }
@@ -425,6 +484,16 @@ private struct ClipboardPickerView: View {
         .background(VisualEffectBlur(material: .popover))
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator, lineWidth: 0.5))
+        .overlay {
+            // hover preview for image items — floats over the list, never
+            // intercepts the mouse so hover/keys keep working underneath
+            if let image = model.previewImage {
+                ClipPreviewView(image: image, caption: model.previewCaption)
+                    .shadow(color: .black.opacity(0.35), radius: 20, y: 8)
+                    .allowsHitTesting(false)
+                    .padding(24)
+            }
+        }
         .onAppear { searchFocused = true }
     }
 
@@ -440,16 +509,26 @@ private struct ClipboardPickerView: View {
                        title: "Không tìm thấy",
                        subtitle: "Không có mục nào khớp với “\(model.query)”.")
         } else {
+            let firstUnpinned = items.firstIndex(where: { !$0.pinned }) ?? items.count
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 2) {
                         ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                            if index == 0, item.pinned {
+                                sectionLabel("Đã ghim", icon: "pin.fill")
+                            }
+                            if index == firstUnpinned, firstUnpinned > 0 {
+                                sectionLabel("Lịch sử", icon: "clock")
+                            }
                             PickerRow(index: index, item: item,
                                       isSelected: index == model.selection,
                                       imageURL: imageURL,
                                       onPick: { onPick(item) },
                                       onRemove: { onRemove(item) },
-                                      onStrip: { onStrip(item) })
+                                      onStrip: { onStrip(item) },
+                                      onTogglePin: { onTogglePin(item) },
+                                      onPreview: { onPreview(item) },
+                                      onPreviewEnd: onPreviewEnd)
                                 .id(item.id) // stable identity so filtering shows correct rows
                         }
                     }
@@ -482,6 +561,20 @@ private struct ClipboardPickerView: View {
         .padding(.horizontal, 30)
     }
 
+    private func sectionLabel(_ title: String, icon: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 8, weight: .semibold))
+            Text(title.uppercased())
+                .font(.caption2.weight(.semibold))
+            Spacer()
+        }
+        .foregroundStyle(.tertiary)
+        .padding(.horizontal, 10)
+        .padding(.top, 6)
+        .padding(.bottom, 2)
+    }
+
     private func hint(_ key: String, _ label: String) -> some View {
         HStack(spacing: 4) {
             Text(key)
@@ -493,6 +586,37 @@ private struct ClipboardPickerView: View {
     }
 }
 
+/// Floating card with a large image preview, shown while hovering an image row.
+private struct ClipPreviewView: View {
+    let image: NSImage
+    let caption: String
+
+    var body: some View {
+        // natural size capped at 380pt — never upscale small thumbnails
+        let iw = max(image.size.width, 1), ih = max(image.size.height, 1)
+        let scale = min(1, min(380 / iw, 380 / ih))
+        let w = iw * scale, h = ih * scale
+
+        VStack(spacing: 6) {
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: w, height: h)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            Text(caption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(maxWidth: max(w, 140))
+        }
+        .padding(10)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.88))
+        .background(VisualEffectBlur(material: .popover))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator, lineWidth: 0.5))
+    }
+}
+
 private struct PickerRow: View {
     let index: Int
     let item: ClipItem
@@ -501,7 +625,11 @@ private struct PickerRow: View {
     let onPick: () -> Void
     let onRemove: () -> Void
     let onStrip: () -> Void
+    let onTogglePin: () -> Void
+    let onPreview: () -> Void
+    let onPreviewEnd: () -> Void
     @State private var hovering = false
+    @State private var previewTask: DispatchWorkItem?
 
     private var subtitle: String {
         let app = item.sourceApp ?? "Khác"
@@ -671,15 +799,31 @@ private struct PickerRow: View {
                     .lineLimit(2)
                     .font(.body)
                     .foregroundStyle(isSelected ? .white : .primary)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(isSelected ? .white.opacity(0.8) : .secondary)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    if item.pinned {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(isSelected ? Color.white.opacity(0.9) : Color.orange)
+                            .rotationEffect(.degrees(45))
+                    }
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(isSelected ? .white.opacity(0.8) : .secondary)
+                        .lineLimit(1)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if hovering {
                 HStack(spacing: 8) {
+                    Button(action: onTogglePin) {
+                        Image(systemName: item.pinned ? "pin.slash" : "pin")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(isSelected ? Color.white.opacity(0.9) : (item.pinned ? Color.secondary : Color.orange))
+                    }
+                    .buttonStyle(.plain)
+                    .help(item.pinned ? "Bỏ ghim" : "Ghim lên đầu — không bị trôi, không bị xoá khi dọn lịch sử")
+
                     if item.htmlText != nil {
                         Button(action: onStrip) {
                             Image(systemName: "eraser")
@@ -705,7 +849,24 @@ private struct PickerRow: View {
                     in: RoundedRectangle(cornerRadius: 7))
         .contentShape(Rectangle())
         .onTapGesture { onPick() }
-        .onHover { hovering = $0 }
+        .onHover { h in
+            hovering = h
+            previewTask?.cancel()
+            previewTask = nil
+            if h, item.isImage || item.filePath != nil { // showPreview ignores non-image files
+                // slight delay so skimming the list doesn't flash previews
+                let task = DispatchWorkItem { onPreview() }
+                previewTask = task
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: task)
+            } else {
+                onPreviewEnd()
+            }
+        }
+        .onDisappear {
+            previewTask?.cancel()
+            previewTask = nil
+            if hovering { onPreviewEnd() }
+        }
         .animation(.easeOut(duration: 0.12), value: isSelected)
         .animation(.easeOut(duration: 0.12), value: hovering)
     }
