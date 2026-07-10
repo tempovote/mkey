@@ -24,7 +24,7 @@ struct MkeyApp: App {
                 .environmentObject(state)
         }
 
-        Window("MKey — Bộ gõ Tiếng Việt", id: "settings") {
+        Window("XKey — Bộ gõ Tiếng Việt", id: "settings") {
             SettingsRootView()
                 .environmentObject(state)
         }
@@ -32,7 +32,7 @@ struct MkeyApp: App {
         .windowResizability(.contentSize)
         .defaultSize(width: 820, height: 560)
 
-        Window("Chào mừng đến với MKey", id: "welcome") {
+        Window("Chào mừng đến với XKey", id: "welcome") {
             WelcomePage()
                 .environmentObject(state)
         }
@@ -72,7 +72,7 @@ struct MenuContent: View {
                 openWelcomeWindow()
             }
             Divider()
-            Button("Thoát MKey") {
+            Button("Thoát XKey") {
                 NSApp.terminate(nil)
             }
             .keyboardShortcut("q")
@@ -114,11 +114,11 @@ struct MenuContent: View {
             Divider()
 
             Button("Bảng điều khiển…") { open(.typing) }
-            Button("Giới thiệu MKey") { open(.about) }
+            Button("Giới thiệu XKey") { open(.about) }
 
             Divider()
 
-            Button("Thoát MKey") {
+            Button("Thoát XKey") {
                 NSApp.terminate(nil)
             }
             .keyboardShortcut("q")
@@ -247,7 +247,7 @@ final class MkeyAppDelegate: NSObject, NSApplicationDelegate {
             guard let info = note.object as? ReleaseInfo else { return }
             Task { @MainActor in
                 let alert = NSAlert()
-                alert.messageText = "Đã có MKey \(info.version)"
+                alert.messageText = "Đã có XKey \(info.version)"
                 let notes = info.notes.trimmingCharacters(in: .whitespacesAndNewlines)
                 alert.informativeText = notes.isEmpty
                     ? "Một phiên bản mới đã sẵn sàng để tải về."

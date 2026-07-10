@@ -214,7 +214,7 @@ struct PermissionBanner: View {
         HStack(spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
-            Text("MKey cần quyền Trợ năng (Accessibility) để gõ tiếng Việt.")
+            Text("XKey cần quyền Trợ năng (Accessibility) để gõ tiếng Việt.")
                 .font(.footnote.weight(.medium))
             Spacer()
             Button("Mở Cài đặt hệ thống") {

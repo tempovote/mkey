@@ -45,16 +45,16 @@ brew install xcodegen
 cd mkey
 swift scripts/make_icon.swift Sources/Support/Assets.xcassets/AppIcon.appiconset  # nếu muốn sinh lại icon
 xcodegen generate
-xcodebuild -project mkey.xcodeproj -scheme mkey -configuration Release -derivedDataPath build
-open build/Build/Products/Release/   # chứa mkey.app
+xcodebuild -project XKey.xcodeproj -scheme XKey -configuration Release -derivedDataPath build
+open build/Build/Products/Release/   # chứa XKey.app
 ```
 
 ## Cài đặt & cấp quyền
 
-1. Kéo `mkey.app` vào thư mục **Applications**.
+1. Kéo `XKey.app` vào thư mục **Applications**.
 2. Mở app — macOS sẽ hỏi quyền **Trợ năng (Accessibility)**:
-   System Settings → Privacy & Security → Accessibility → bật **mkey**.
-3. mkey tự phát hiện khi được cấp quyền và bắt đầu hoạt động (không cần mở lại).
+   System Settings → Privacy & Security → Accessibility → bật **XKey**.
+3. XKey tự phát hiện khi được cấp quyền và bắt đầu hoạt động (không cần mở lại).
 4. Phím chuyển Việt/Anh mặc định: **⌥Z** (đổi được trong Bảng điều khiển → Bộ gõ).
 
 > **Lưu ý về chữ ký ad-hoc**: bản tự build được ký ad-hoc, nên **mỗi lần build

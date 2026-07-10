@@ -34,7 +34,7 @@ struct WelcomePage: View {
 
             // Welcome Text
             VStack(spacing: 6) {
-                Text("Chào mừng đến với MKey")
+                Text("Chào mừng đến với XKey")
                     .font(.system(size: 24, weight: .bold, design: .rounded))
                     .foregroundStyle(.primary)
 
@@ -57,7 +57,7 @@ struct WelcomePage: View {
                             .font(.headline)
                             .foregroundStyle(.primary)
                         
-                        Text("Để MKey có thể nhận diện phím gõ và chuyển đổi thành chữ Tiếng Việt có dấu trực tiếp trên ứng dụng của bạn, macOS yêu cầu quyền Trợ năng.")
+                        Text("Để XKey có thể nhận diện phím gõ và chuyển đổi thành chữ Tiếng Việt có dấu trực tiếp trên ứng dụng của bạn, macOS yêu cầu quyền Trợ năng.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .lineSpacing(2)

@@ -26,7 +26,7 @@ struct AboutPage: View {
                             .shadow(color: .black.opacity(0.18), radius: 10, y: 5)
                     }
 
-                    Text("MKey")
+                    Text("XKey")
                         .font(.system(size: 32, weight: .semibold, design: .rounded))
                         .padding(.top, 12)
 

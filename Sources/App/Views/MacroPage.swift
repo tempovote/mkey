@@ -196,7 +196,7 @@ struct MacroPage: View {
         let panel = NSSavePanel()
         panel.message = "Chọn nơi lưu dữ liệu gõ tắt"
         panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = "mkeyMacro"
+        panel.nameFieldStringValue = "xkeyMacro"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         MKBridge.exportMacros(toFile: url.path)
     }
@@ -249,11 +249,11 @@ final class MacroCloudSync: ObservableObject {
     }
 
     private var syncFolderURL: URL {
-        iCloudDriveRootURL.appendingPathComponent("mkey", isDirectory: true)
+        iCloudDriveRootURL.appendingPathComponent("xkey", isDirectory: true)
     }
 
     private var syncFileURL: URL {
-        syncFolderURL.appendingPathComponent("mkeyMacroData.bin")
+        syncFolderURL.appendingPathComponent("xkeyMacroData.bin")
     }
 
     private init() {}

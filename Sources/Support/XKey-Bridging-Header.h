@@ -1,6 +1,6 @@
 //
-//  mkey-Bridging-Header.h
-//  mkey
+//  XKey-Bridging-Header.h
+//  XKey
 //
 
 #import "MKGlobals.h"

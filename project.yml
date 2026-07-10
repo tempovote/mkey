@@ -1,6 +1,6 @@
-name: mkey
+name: XKey
 options:
-  bundleIdPrefix: vn.mkey
+  bundleIdPrefix: vn.xkey
   deploymentTarget:
     macOS: "14.0"
   createIntermediateGroups: true
@@ -38,7 +38,7 @@ settings:
       SWIFT_REFLECTION_METADATA_LEVEL: without-names
 
 targets:
-  mkey:
+  XKey:
     type: application
     platform: macOS
     sources:
@@ -50,11 +50,11 @@ targets:
           - "Assets.xcassets"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: vn.mkey.app
-        PRODUCT_NAME: mkey
+        PRODUCT_BUNDLE_IDENTIFIER: vn.xkey.app
+        PRODUCT_NAME: XKey
         INFOPLIST_FILE: Sources/Support/Info.plist
-        CODE_SIGN_ENTITLEMENTS: Sources/Support/mkey.entitlements
-        SWIFT_OBJC_BRIDGING_HEADER: Sources/Support/mkey-Bridging-Header.h
+        CODE_SIGN_ENTITLEMENTS: Sources/Support/XKey.entitlements
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Support/XKey-Bridging-Header.h
         HEADER_SEARCH_PATHS:
           - "$(SRCROOT)/Sources/Engine"
           - "$(SRCROOT)/Sources/Platform"

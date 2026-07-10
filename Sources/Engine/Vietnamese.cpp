@@ -456,6 +456,7 @@ static const Uint16 ct_6[] = {KEY_N, KEY_H};
 static const Uint16 ct_7[] = {KEY_N, KEY_G};
 static const Uint16 ct_8[] = {KEY_K, KEY_H};
 static const Uint16 ct_9[] = {KEY_G, KEY_H};
+static const Uint16 ct_dz[] = {KEY_D, KEY_Z};
 static const Uint16 ct_10[] = {KEY_G};
 static const Uint16 ct_11[] = {KEY_C};
 static const Uint16 ct_12[] = {KEY_Q};
@@ -482,13 +483,13 @@ static const Uint16 ct_32[] = {KEY_J | END_CONSONANT_MASK};
 
 static const Array16 ct_rows[] = {
     {ct_0, 3}, {ct_1, 2}, {ct_2, 2}, {ct_3, 2}, {ct_4, 2}, {ct_5, 2}, {ct_6, 2},
-    {ct_7, 2}, {ct_8, 2}, {ct_9, 2}, {ct_10, 1}, {ct_11, 1}, {ct_12, 1}, {ct_13, 1},
+    {ct_7, 2}, {ct_8, 2}, {ct_9, 2}, {ct_dz, 2}, {ct_10, 1}, {ct_11, 1}, {ct_12, 1}, {ct_13, 1},
     {ct_14, 1}, {ct_15, 1}, {ct_16, 1}, {ct_17, 1}, {ct_18, 1}, {ct_19, 1}, {ct_20, 1},
     {ct_21, 1}, {ct_22, 1}, {ct_23, 1}, {ct_24, 1}, {ct_25, 1}, {ct_26, 1}, {ct_27, 1},
     {ct_28, 1}, {ct_29, 1}, {ct_30, 1}, {ct_31, 1}, {ct_32, 1}
 };
 
-const Array2D16 _consonantTable = {ct_rows, 33};
+const Array2D16 _consonantTable = {ct_rows, 34};
 
 // --- _endConsonantTable static definitions ---
 static const Uint16 ect_0[] = {KEY_T};

@@ -89,7 +89,7 @@ final class UpdateChecker: ObservableObject {
     private func fetchLatest() async throws -> ReleaseInfo {
         var request = URLRequest(url: releaseAPI)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        request.setValue("MKey", forHTTPHeaderField: "User-Agent")
+        request.setValue("XKey", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 15
 
         let (data, response) = try await URLSession.shared.data(for: request)

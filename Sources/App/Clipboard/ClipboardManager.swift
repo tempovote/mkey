@@ -151,7 +151,7 @@ final class ClipboardManager: ObservableObject {
             "clipboardPickerAutoHide": true,
         ])
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        imageDir = appSupport.appendingPathComponent("MKey/clipboard", isDirectory: true)
+        imageDir = appSupport.appendingPathComponent("XKey/clipboard", isDirectory: true)
         try? FileManager.default.createDirectory(at: imageDir, withIntermediateDirectories: true)
 
         enabled = defaults.bool(forKey: "clipboardHistoryEnabled")
