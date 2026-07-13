@@ -69,7 +69,7 @@ struct AboutPage: View {
 
                     Spacer(minLength: 16)
 
-                    Text("Phát triển bởi **Anh Tuấn** · © 2026")
+                    Text("Rebuild by **Long Hồ** · © 2026")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
 

@@ -166,13 +166,81 @@ private struct HotkeyRecorderRepresentable: NSViewRepresentable {
         var parent: HotkeyRecorderRepresentable
         var isRecording = false
         private var monitor: Any?
+        private var maxModifiers: Int32 = 0
+        private var keyPressed = false
 
         init(parent: HotkeyRecorderRepresentable) {
             self.parent = parent
         }
 
+        private func getModifiers(from event: NSEvent) -> Int32 {
+            let flags = event.modifierFlags
+            var mods: Int32 = 0
+            if flags.contains(.control) { mods |= 0x100 }
+            if flags.contains(.option) { mods |= 0x200 }
+            if flags.contains(.command) { mods |= 0x400 }
+            if flags.contains(.shift) { mods |= 0x800 }
+            return mods
+        }
+
+        private func stringFromKeyCode(_ keyCode: UInt16) -> String? {
+            switch keyCode {
+            case 0: return "a"
+            case 1: return "s"
+            case 2: return "d"
+            case 3: return "f"
+            case 4: return "h"
+            case 5: return "g"
+            case 6: return "z"
+            case 7: return "x"
+            case 8: return "c"
+            case 9: return "v"
+            case 11: return "b"
+            case 12: return "q"
+            case 13: return "w"
+            case 14: return "e"
+            case 15: return "r"
+            case 16: return "y"
+            case 17: return "t"
+            case 18: return "1"
+            case 19: return "2"
+            case 20: return "3"
+            case 21: return "4"
+            case 22: return "6"
+            case 23: return "5"
+            case 24: return "="
+            case 25: return "9"
+            case 26: return "7"
+            case 27: return "-"
+            case 28: return "8"
+            case 29: return "0"
+            case 30: return "]"
+            case 31: return "o"
+            case 32: return "u"
+            case 33: return "["
+            case 34: return "i"
+            case 35: return "p"
+            case 37: return "l"
+            case 38: return "j"
+            case 39: return "'"
+            case 40: return "k"
+            case 41: return ";"
+            case 42: return "\\"
+            case 43: return ","
+            case 44: return "/"
+            case 45: return "n"
+            case 46: return "m"
+            case 47: return "."
+            case 50: return "`"
+            case 49: return " "
+            default: return nil
+            }
+        }
+
         func startOrStopMonitor() {
             if isRecording, monitor == nil {
+                self.maxModifiers = 0
+                self.keyPressed = false
                 Task { @MainActor in
                     MKBridge.setEngineSuspended(true)
                     ClipboardManager.shared.suspendHotKey()
@@ -187,18 +255,27 @@ private struct HotkeyRecorderRepresentable: NSViewRepresentable {
                         }
                         return event
                     } else if event.type == .flagsChanged {
-                        let flags = event.modifierFlags
-                        var mods: Int32 = 0
-                        if flags.contains(.control) { mods |= 0x100 }
-                        if flags.contains(.option) { mods |= 0x200 }
-                        if flags.contains(.command) { mods |= 0x400 }
-                        if flags.contains(.shift) { mods |= 0x800 }
+                        let mods = self.getModifiers(from: event)
+                        if mods > self.maxModifiers {
+                            self.maxModifiers = mods
+                        }
 
                         Task { @MainActor in
                             self.parent.activeModifiers = mods
                         }
+
+                        // Auto-save modifier-only hotkey when all modifiers are released
+                        if mods == 0 && self.maxModifiers != 0 && !self.keyPressed {
+                            let capturedMods = self.maxModifiers
+                            Task { @MainActor in
+                                let beep = self.parent.status & 0x8000
+                                self.parent.status = beep | capturedMods | Int32(bitPattern: 0xFE0000FE)
+                                self.parent.isRecording = false
+                            }
+                        }
                         return event
                     } else if event.type == .keyDown {
+                        self.keyPressed = true
                         let code = event.keyCode
 
                         // Escape cancels
@@ -221,10 +298,11 @@ private struct HotkeyRecorderRepresentable: NSViewRepresentable {
 
                         // Return/Enter confirms modifier-only shortcut
                         if code == 36 || code == 76 {
-                            if self.parent.activeModifiers != 0 {
+                            let currentModifiers = self.getModifiers(from: event)
+                            if currentModifiers != 0 {
                                 Task { @MainActor in
                                     let beep = self.parent.status & 0x8000
-                                    self.parent.status = beep | self.parent.activeModifiers | Int32(bitPattern: 0xFE0000FE)
+                                    self.parent.status = beep | currentModifiers | Int32(bitPattern: 0xFE0000FE)
                                     self.parent.isRecording = false
                                 }
                                 return nil
@@ -235,13 +313,13 @@ private struct HotkeyRecorderRepresentable: NSViewRepresentable {
                         var displayChar: UInt8 = 0xFE
                         if code == 49 {
                             displayChar = 32
-                        } else if let chars = event.characters, let first = chars.utf8.first, code < 0xFE {
+                        } else if let letter = self.stringFromKeyCode(code), let first = letter.utf8.first, code < 0xFE {
                             displayChar = first
                         } else {
                             return event
                         }
 
-                        let finalModifiers = self.parent.activeModifiers
+                        let finalModifiers = self.getModifiers(from: event)
                         let finalKeyCode = UInt8(truncatingIfNeeded: code)
 
                         Task { @MainActor in
